@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lernpaket-pipeline"
+version = "0.2.0"
+description = "Aufbereitung: erzeugt pro Modul ein Lernpaket aus den Rohmaterialien"
+requires-python = ">=3.9"
+dependencies = ["pypdf>=4"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+# Schwere Extraktionswerkzeuge sind bewusst optional (ADR 0004: Werkzeuge austauschbar).
+# Ohne sie laufen die jeweiligen Adapter nicht, die Pipeline degradiert kontrolliert.
+asr = ["faster-whisper>=1.0"]
+folien = ["scenedetect[opencv]>=0.6"]
+ocr = ["pytesseract>=0.3", "pdf2image>=1.16"]
+marker = ["marker-pdf>=1.0"]
+
+[project.scripts]
+lernpaket = "lernpaket_pipeline.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["lernpaket_pipeline*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

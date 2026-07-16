@@ -1,0 +1,94 @@
+:root {
+  --tinte: #1c1e26; --papier: #fafaf8; --karte: #ffffff; --rand: #e2e2dd;
+  --akzent: #2456d6; --gruen: #1d8a4b; --rot: #c23b3b; --gelb: #b8860b;
+  --grau: #6b6f7b;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--papier); color: var(--tinte);
+  font: 16px/1.55 -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+header {
+  display: flex; align-items: baseline; gap: 1rem;
+  padding: 0.8rem 1.2rem; border-bottom: 1px solid var(--rand); background: var(--karte);
+}
+header h1 { font-size: 1.1rem; margin: 0; }
+header a { color: inherit; text-decoration: none; }
+#brotkrumen { color: var(--grau); font-size: 0.9rem; }
+main { max-width: 880px; margin: 0 auto; padding: 1.2rem; }
+
+.karte {
+  background: var(--karte); border: 1px solid var(--rand); border-radius: 10px;
+  padding: 1rem 1.2rem; margin-bottom: 1rem;
+}
+.karte h2 { margin-top: 0; font-size: 1.05rem; }
+.modul-liste { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+.modul-karte { cursor: pointer; transition: border-color 0.15s; }
+.modul-karte:hover { border-color: var(--akzent); }
+
+button {
+  font: inherit; border: 1px solid var(--rand); border-radius: 8px;
+  background: var(--karte); padding: 0.45rem 0.9rem; cursor: pointer;
+}
+button.primaer { background: var(--akzent); border-color: var(--akzent); color: #fff; }
+button:disabled { opacity: 0.5; cursor: default; }
+input, select, textarea {
+  font: inherit; border: 1px solid var(--rand); border-radius: 8px; padding: 0.4rem 0.6rem;
+}
+textarea { width: 100%; }
+
+.chip {
+  display: inline-block; font-size: 0.78rem; padding: 0.1rem 0.55rem;
+  border-radius: 99px; border: 1px solid var(--rand); color: var(--grau);
+  margin: 0 0.25rem 0.25rem 0; background: var(--papier);
+}
+.chip.beleg { border-color: #c9d7f5; color: var(--akzent); background: #f0f4fd; }
+.chip.warnung { border-color: #eedcb0; color: var(--gelb); background: #fdf7e7; }
+.chip.luecke { border-color: #f0c9c9; color: var(--rot); background: #fdf0f0; }
+.chip.ok { border-color: #c4e3d0; color: var(--gruen); background: #eefaf3; }
+
+.balken { height: 6px; background: var(--rand); border-radius: 3px; overflow: hidden; }
+.balken > div { height: 100%; background: var(--gruen); }
+.balken.schwach > div { background: var(--rot); }
+
+.thema-zeile {
+  display: grid; grid-template-columns: 1fr 120px auto auto; gap: 0.8rem;
+  align-items: center; padding: 0.55rem 0; border-bottom: 1px solid var(--rand);
+}
+.thema-zeile:last-child { border-bottom: none; }
+.thema-zeile .titel { font-weight: 500; }
+.thema-zeile small { color: var(--grau); display: block; }
+
+.frage-optionen { display: grid; gap: 0.5rem; margin: 0.8rem 0; }
+.frage-optionen button { text-align: left; }
+.frage-optionen button.korrekt { border-color: var(--gruen); background: #eefaf3; }
+.frage-optionen button.falsch { border-color: var(--rot); background: #fdf0f0; }
+.feedback { padding: 0.8rem; border-radius: 8px; margin-top: 0.8rem; }
+.feedback.korrekt { background: #eefaf3; border: 1px solid #c4e3d0; }
+.feedback.falsch { background: #fdf0f0; border: 1px solid #f0c9c9; }
+
+.materialluecke {
+  border-left: 4px solid var(--gelb); background: #fdf7e7;
+  padding: 0.6rem 0.9rem; border-radius: 0 8px 8px 0; margin: 0.5rem 0;
+  font-size: 0.92rem;
+}
+.inhalt table { border-collapse: collapse; margin: 0.6rem 0; }
+.inhalt th, .inhalt td { border: 1px solid var(--rand); padding: 0.3rem 0.7rem; }
+.inhalt pre {
+  background: #f2f2ef; padding: 0.7rem; border-radius: 8px; overflow-x: auto;
+}
+.inhalt code { background: #f2f2ef; padding: 0.1rem 0.3rem; border-radius: 4px; }
+.inhalt pre code { padding: 0; background: none; }
+
+.tutor-verlauf { display: flex; flex-direction: column; gap: 0.6rem; margin-bottom: 0.8rem; }
+.tutor-nachricht { padding: 0.6rem 0.9rem; border-radius: 10px; max-width: 85%; }
+.tutor-nachricht.nutzer { background: #e8eefc; align-self: flex-end; }
+.tutor-nachricht.tutor { background: var(--papier); border: 1px solid var(--rand); align-self: flex-start; }
+.tutor-eingabe { display: flex; gap: 0.5rem; }
+.tutor-eingabe input { flex: 1; }
+
+.hinweis { color: var(--grau); font-size: 0.9rem; }
+.fehler { color: var(--rot); }
+.plan-tag { margin-bottom: 0.6rem; }
+.plan-tag .datum { font-weight: 600; font-size: 0.9rem; }
+.aktionen { display: flex; gap: 0.6rem; flex-wrap: wrap; margin-top: 0.8rem; }
