@@ -2,6 +2,13 @@
 
 Bewusst noch nicht entschiedene Design-/Implementierungsfragen. Keine Features (die liegen in `BACKLOG.md`), sondern Entscheidungen, die beim Bau fallen müssen.
 
+> **Stand Bauphase (Juli 2026): alle drei Punkte sind entschieden.**
+> 1. SRS-Algorithmus → fensteradaptive Eigenlogik, **ADR 0006**.
+> 2. Embedding-/Retrieval-Setup → BM25 über die Aufbereitungs-Chunks, **ADR 0007**.
+> 3. Datei-Vertrags-Struktur → **docs/DATEI-VERTRAG.md**.
+>
+> Die ursprünglichen Fragestellungen bleiben unten als Kontext stehen.
+
 ## 1. Spaced-Repetition-Algorithmus im Wiederholungsplan
 
 Welcher Algorithmus steuert das verteilte Wiederholen pro Modul (siehe Glossar **Wiederholungsplan**)? Kandidaten: SM-2 (klassisch, Anki) oder FSRS (modern, datengetrieben). Besonderheit hier: Das Fenster ist sehr kurz (3 Tage bis 2 Wochen), die meisten SRS-Verfahren sind auf Wochen/Monate ausgelegt — der Scheduler muss auf komprimierten Zeitskalen sinnvoll arbeiten und bei 3 Tagen in Triage kippen. Zu klären: Standardverfahren übernehmen oder eine schlanke, fenstergerechte Eigenlogik.
