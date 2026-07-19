@@ -93,6 +93,11 @@ class PdfMinerExtraktor:
             from pdfminer.high_level import extract_text  # type: ignore
         except ImportError:  # pragma: no cover - Abhängigkeit fehlt
             return {}
+        # pdfminer warnt lautstark über Grafik-Details, die es nicht versteht
+        # (z. B. Musterfarben: "Cannot set gray non-stroke color … /'p5'").
+        # Für die Textextraktion ist das irrelevant — nur echte Fehler zeigen.
+        import logging
+        logging.getLogger("pdfminer").setLevel(logging.ERROR)
         nummern = sorted(set(nummern))
         text = extract_text(str(pfad), page_numbers=[n - 1 for n in nummern])
         teile = text.split("\f")
