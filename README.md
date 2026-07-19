@@ -33,10 +33,27 @@ pip install -e '.[folien]' # PySceneDetect   → --mit-folien (Folien aus Video)
 pip install -e '.[ocr]'    # tesseract/poppler → --mit-ocr  (Scan-PDFs)
 ```
 
-Mit gesetztem `ANTHROPIC_API_KEY` generiert das Remote-Spitzenmodell die Lehrblöcke
-und Quizfragen (ADR 0002); ohne Schlüssel läuft ein deterministischer
-Heuristik-Generator (geringere Qualität, gleicher Vertrag). Jedes Artefakt trägt
-Belege; ein Verifikationsdurchlauf prüft Antworten gegen die Quelle (ADR 0003).
+Die Lehrblöcke und Quizfragen generiert ein LLM (ADR 0002); ohne Anbindung läuft
+ein deterministischer Heuristik-Generator (deutlich geringere Qualität, gleicher
+Vertrag). Vier Anbieter stehen zur Wahl — per `--llm`/`--llm-modell` oder
+Umgebung (`LERNPAKET_LLM`, `LERNPAKET_LLM_MODELL`):
+
+| Anbieter    | Schlüssel/Voraussetzung                | Standardmodell    |
+| ----------- | -------------------------------------- | ----------------- |
+| `anthropic` | `ANTHROPIC_API_KEY`                    | `claude-sonnet-5` |
+| `gemini`    | `GEMINI_API_KEY` (o. `GOOGLE_API_KEY`) | `gemini-flash-latest` |
+| `copilot`   | `GITHUB_TOKEN` (GitHub Models)         | `openai/gpt-4o`   |
+| `ollama`    | lokaler Ollama-Server (`LERNPAKET_OLLAMA_URL`, Default `localhost:11434`) | `llama3.1` |
+
+```bash
+.venv/bin/lernpaket pfad/zum/modul --llm gemini --llm-modell gemini-2.5-flash
+LERNPAKET_LLM=ollama LERNPAKET_LLM_MODELL=qwen3 .venv/bin/lernpaket pfad/zum/modul
+```
+
+Ohne explizite Wahl werden `anthropic`/`gemini` anhand vorhandener Schlüssel
+auto-erkannt; `copilot` und `ollama` müssen explizit gewählt werden. Jedes
+Artefakt trägt Belege; ein Verifikationsdurchlauf prüft Antworten gegen die
+Quelle (ADR 0003).
 
 ## Lernphase (Player)
 
@@ -48,8 +65,10 @@ npm start          # http://localhost:4321
 
 Der Player scannt `lernpakete/` (mehrere Module unabhängig), fährt Diagnosequiz →
 Lücken → Lehrtiefe, plant fensteradaptiv (Triage ≤ 4 Tage, sonst Spacing, ADR 0006)
-und speichert Fortschritt in `player/daten/fortschritt.db`. Für den Tutormodus
-`ANTHROPIC_API_KEY` in der Server-Umgebung setzen — der Schlüssel bleibt im Backend.
+und speichert Fortschritt in `player/daten/fortschritt.db`. Der Tutormodus nutzt
+dieselbe LLM-Anbieter-Auswahl wie die Pipeline (`LERNPAKET_LLM` bzw.
+Auto-Erkennung über `ANTHROPIC_API_KEY`/`GEMINI_API_KEY`) — Schlüssel bleiben in
+der Server-Umgebung und erreichen nie das Frontend.
 
 ## Tests
 

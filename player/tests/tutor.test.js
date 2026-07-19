@@ -56,6 +56,6 @@ describe('Tutormodus', () => {
   it('meldet ohne API-Schlüssel einen klaren Fehler statt zu raten', async () => {
     const tutor = erstelleTutor({ paket, llmCall: null });
     const antwort = await tutor.frage('Egal');
-    expect(antwort.fehler).toMatch(/ANTHROPIC_API_KEY/);
+    expect(antwort.fehler).toMatch(/LLM-Anbindung/);
   });
 });

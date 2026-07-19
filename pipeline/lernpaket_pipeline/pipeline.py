@@ -16,7 +16,8 @@ from .chunks import chunks_aus_folien, chunks_aus_seiten, chunks_aus_transkript
 from .extraktion.audio import Transkribierer
 from .extraktion.folien import FolienLeser, SzenenErkenner, extrahiere_folien
 from .extraktion.formeln import DokumentParser, waehle_parser
-from .extraktion.pdf import Ocr, Seite, lies_pdf
+from .extraktion.pdf import (Ocr, Seite, ist_verklebt, lies_pdf,
+                             seiten_mit_bildern)
 from .generierung import Generator, HeuristischerGenerator, LLMGenerator
 from .llm import hole_llm
 from .relevanz import finde_relevanz_marker, gewichte_themen
@@ -39,19 +40,40 @@ class QuellenLage:
         return bool(self.altklausuren or self.uebungen)
 
 
+VIDEO_ENDUNGEN = (".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi")
+
+
+def _dateien_mit_endung(verzeichnis: Optional[Path], endungen) -> List[Path]:
+    if verzeichnis is None or not verzeichnis.is_dir():
+        return []
+    return sorted(p for p in verzeichnis.iterdir()
+                  if p.is_file() and p.suffix.lower() in endungen)
+
+
+def _unterordner(modul_dir: Path, *namen: str) -> Optional[Path]:
+    """Findet einen Unterordner unabhängig von Groß-/Kleinschreibung."""
+    for eintrag in sorted(modul_dir.iterdir()):
+        if eintrag.is_dir() and eintrag.name.lower() in namen:
+            return eintrag
+    return None
+
+
 def finde_quellen(modul_dir: Path) -> QuellenLage:
     """Erkennt die Materiallage eines Modulverzeichnisses per Konvention.
 
     - Studienbrief: `studienbrief*.pdf`, sonst das größte PDF auf oberster Ebene.
-    - Vorlesungen: `*.mp4` (oberste Ebene oder `vorlesungen/`).
-    - Optionalquellen: `altklausuren/*.pdf`, `uebungen/*.pdf` sowie Dateien
+    - Vorlesungen: Videodateien (`VIDEO_ENDUNGEN`) auf oberster Ebene oder in
+      `vorlesungen/` (Groß-/Kleinschreibung egal).
+    - Optionalquellen: PDFs in `altklausuren/` / `uebungen/` sowie Dateien
       `altklausur*.pdf` / `uebung*.pdf` auf oberster Ebene.
     """
     modul_dir = Path(modul_dir)
     pdfs = sorted(modul_dir.glob("*.pdf"))
-    altklausuren = sorted(modul_dir.glob("altklausuren/*.pdf")) + [
+    altklausuren = _dateien_mit_endung(
+        _unterordner(modul_dir, "altklausuren"), (".pdf",)) + [
         p for p in pdfs if p.name.lower().startswith("altklausur")]
-    uebungen = sorted(modul_dir.glob("uebungen/*.pdf")) + [
+    uebungen = _dateien_mit_endung(
+        _unterordner(modul_dir, "uebungen", "übungen"), (".pdf",)) + [
         p for p in pdfs if p.name.lower().startswith(("uebung", "übung"))]
     kandidaten = [p for p in pdfs if p not in altklausuren and p not in uebungen]
     studienbrief = next(
@@ -61,7 +83,9 @@ def finde_quellen(modul_dir: Path) -> QuellenLage:
             raise FileNotFoundError(
                 f"Pflichtquelle fehlt: kein Studienbrief-PDF in {modul_dir}")
         studienbrief = max(kandidaten, key=lambda p: p.stat().st_size)
-    vorlesungen = sorted(modul_dir.glob("*.mp4")) + sorted(modul_dir.glob("vorlesungen/*.mp4"))
+    vorlesungen = (_dateien_mit_endung(modul_dir, VIDEO_ENDUNGEN)
+                   + _dateien_mit_endung(_unterordner(modul_dir, "vorlesungen"),
+                                         VIDEO_ENDUNGEN))
     return QuellenLage(studienbrief=studienbrief, vorlesungen=vorlesungen,
                        altklausuren=altklausuren, uebungen=uebungen)
 
@@ -82,12 +106,14 @@ def erzeuge_lernpaket(
     generator: Optional[Generator] = None,
     parser: Optional[DokumentParser] = None,
     jetzt: Optional[datetime] = None,
+    llm_anbieter: Optional[str] = None,
+    llm_modell: Optional[str] = None,
 ) -> Lernpaket:
     """Führt die komplette Aufbereitung aus und gibt das Lernpaket zurück.
 
     Alle schweren Werkzeuge sind injizierbar (Tests: Fakes; PRD-Testentscheidung).
-    Ohne `generator` wird das Remote-LLM genutzt, wenn ANTHROPIC_API_KEY gesetzt
-    ist, sonst der deterministische Heuristik-Generator.
+    Ohne `generator` wählt `hole_llm` den LLM-Anbieter (`llm_anbieter`/`llm_modell`,
+    sonst Umgebung); ohne Anbieter läuft der deterministische Heuristik-Generator.
     """
     modul_dir = Path(modul_dir)
     quellen = finde_quellen(modul_dir)
@@ -95,6 +121,24 @@ def erzeuge_lernpaket(
     titel = titel or modul_dir.name
     parser = parser or waehle_parser()
     materialluecken: List[Materialluecke] = []
+
+    # Vorlesungslage prüfen: fehlende oder unausgewertete Videos werden gemeldet
+    # statt still geschluckt (gleiche Linie wie Scan-Seiten, ADR 0003).
+    if not quellen.vorlesungen:
+        materialluecken.append(Materialluecke(
+            thema_id="", art="schweigen",
+            beschreibung="Keine Vorlesungsvideos gefunden (gesucht: "
+                         + "/".join(f"*{e}" for e in VIDEO_ENDUNGEN)
+                         + " auf oberster Ebene oder in vorlesungen/) — "
+                         "Vorlesungsinhalte fehlen als Themen- und Relevanzquelle.",
+        ))
+    elif transkribierer is None and szenen_erkenner is None:
+        materialluecken.append(Materialluecke(
+            thema_id="", art="schweigen",
+            beschreibung=f"{len(quellen.vorlesungen)} Vorlesungsvideo(s) gefunden, "
+                         "aber nicht ausgewertet — mit --mit-asr (Transkript) "
+                         "und/oder --mit-folien (Folien) neu aufbereiten.",
+        ))
 
     # 1. Pflichtquelle Studienbrief (Textebene/Scan-Erkennung + OCR-Fallback).
     seiten = lies_pdf(quellen.studienbrief, ocr=ocr)
@@ -105,6 +149,27 @@ def erzeuge_lernpaket(
             beschreibung=f"{len(scans_ohne_text)} Scan-Seite(n) ohne Textebene und ohne "
                          f"OCR-Ergebnis (z. B. S. {scans_ohne_text[0]}) — Inhalt fehlt im "
                          f"Lernpaket. OCR-Extras installieren und neu aufbereiten.",
+        ))
+    verklebte = [s.nummer for s in seiten if not s.ist_scan and ist_verklebt(s.text)]
+    if verklebte:
+        materialluecken.append(Materialluecke(
+            thema_id="", art="schweigen",
+            beschreibung=f"{len(verklebte)} Seite(n) mit verklebtem Text ohne "
+                         f"Leerzeichen (z. B. S. {verklebte[0]}) — auch die "
+                         "Zweitextraktion (pdfminer) konnte die Wortgrenzen nicht "
+                         "rekonstruieren; Inhalte dieser Seiten sind nur "
+                         "eingeschränkt nutzbar.",
+        ))
+    scan_nummern = {s.nummer for s in seiten if s.ist_scan}
+    diagramm_seiten = [n for n in seiten_mit_bildern(quellen.studienbrief)
+                       if n not in scan_nummern]
+    if diagramm_seiten:
+        materialluecken.append(Materialluecke(
+            thema_id="", art="schweigen",
+            beschreibung=f"{len(diagramm_seiten)} Seite(n) enthalten eingebettete "
+                         f"Abbildungen/Diagramme (z. B. S. {diagramm_seiten[0]}) — "
+                         "die Text-Extraktion erfasst nur Text, Diagramminhalte "
+                         "fehlen im Lernpaket.",
         ))
     seiten = _normalisiere_seiten(seiten, parser)
     chunks: List[Chunk] = chunks_aus_seiten(seiten)
@@ -145,7 +210,7 @@ def erzeuge_lernpaket(
 
     # 6. Generierung (Beleg-Vertrag) + 7. Verifikationsdurchlauf.
     if generator is None:
-        llm = hole_llm()
+        llm = hole_llm(llm_anbieter, llm_modell)
         generator = LLMGenerator(llm) if llm is not None else HeuristischerGenerator()
     zuordnung = ordne_chunks_zu(themen, chunks)
     ergebnis = generator.erzeuge(themen, zuordnung, zielformat.vorschlag)

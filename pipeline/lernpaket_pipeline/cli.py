@@ -7,9 +7,11 @@ Beispiel:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
+from .llm import ANBIETER
 from .pipeline import erzeuge_und_schreibe
 
 
@@ -24,6 +26,12 @@ def main(argv=None) -> int:
                         help="Zielverzeichnis für Lernpakete (Default: ../lernpakete)")
     parser.add_argument("--modul-id", default=None)
     parser.add_argument("--titel", default=None)
+    parser.add_argument("--llm", default=None, choices=ANBIETER,
+                        help="LLM-Anbieter für die Generierung (Default: Umgebung "
+                             "LERNPAKET_LLM bzw. Auto-Erkennung; ohne Anbieter Heuristik)")
+    parser.add_argument("--llm-modell", default=None,
+                        help="Modellname beim gewählten Anbieter (Default: "
+                             "LERNPAKET_LLM_MODELL bzw. Anbieter-Standard)")
     parser.add_argument("--mit-asr", action="store_true",
                         help="Vorlesungs-Audio mit faster-whisper transkribieren")
     parser.add_argument("--mit-folien", action="store_true",
@@ -32,7 +40,7 @@ def main(argv=None) -> int:
                         help="OCR-Fallback für Scan-Seiten (tesseract)")
     args = parser.parse_args(argv)
 
-    kwargs = {}
+    kwargs = {"llm_anbieter": args.llm, "llm_modell": args.llm_modell}
     if args.mit_asr:
         from .extraktion.audio import FasterWhisperTranskribierer
         kwargs["transkribierer"] = FasterWhisperTranskribierer()
@@ -60,6 +68,10 @@ def main(argv=None) -> int:
     ziel = erzeuge_und_schreibe(args.modul_dir, args.ziel,
                                 modul_id=args.modul_id, titel=args.titel, **kwargs)
     print(f"Lernpaket geschrieben: {ziel}")
+    manifest = json.loads((ziel / "manifest.json").read_text(encoding="utf-8"))
+    for luecke in manifest.get("materialluecken", []):
+        if not luecke.get("thema_id"):  # globale Lücken betreffen die Materiallage
+            print(f"⚠️  {luecke['beschreibung']}", file=sys.stderr)
     return 0
 
 
