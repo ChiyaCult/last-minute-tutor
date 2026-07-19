@@ -36,8 +36,10 @@ BOILERPLATE_TITEL = frozenset({
     "abbildungsverzeichnis", "tabellenverzeichnis", "stichwortverzeichnis",
     "index", "glossar", "anhang",
 })
-# Lösungsabschnitte sind Aufgaben-Anhänge, keine lernbaren Themen.
-_BOILERPLATE_PREFIXE = ("lösung zu ", "loesung zu ", "lösungen zu ", "loesungen zu ")
+# Lösungsabschnitte sind Aufgaben-Anhänge, Bild-/Tabellenunterschriften keine
+# Überschriften — beides keine lernbaren Themen.
+_BOILERPLATE_PREFIXE = ("lösung zu ", "loesung zu ", "lösungen zu ", "loesungen zu ",
+                        "tabelle ", "abb. ", "abbildung ", "listing ")
 # Endet ein Titel auf einem Funktionswort, ist er ein im Umbruch abgerissenes
 # Satzfragment (z. B. "Lösung zu Kontrollaufgabe 1.2 auf").
 _ABRISS_ENDWOERTER = frozenset({
@@ -75,7 +77,8 @@ def ist_boilerplate_titel(titel: str) -> bool:
     if _PUNKTREIHE_RE.search(titel):
         return True
     kern = _bereinige_titel(titel)
-    if not kern or kern.endswith(("-", ":", ",")) or "=" in kern:
+    # "=" und "%" gehören in Formeln bzw. Tabellenzeilen, nicht in Überschriften.
+    if not kern or kern.endswith(("-", ":", ",")) or "=" in kern or "%" in kern:
         return True
     kern_klein = kern.lower()
     if kern_klein.startswith(_BOILERPLATE_PREFIXE):

@@ -15,23 +15,31 @@ player/       Node/JS-Player: Diagnosequiz, adaptive Lehrtiefe, Wiederholungspla
               Fortschritt (SQLite), Tutormodus (Backend-Proxy)
 ```
 
-## Aufbereitung (einmalig pro Modul)
+## Aufbereitung (einmalig pro Modul, zwei Schritte)
 
 ```bash
 cd pipeline
-python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/lernpaket pfad/zum/modul --ziel ../lernpakete
+python3 -m venv .venv && .venv/bin/pip install -e '.[dev,asr,ocr]'
+
+.venv/bin/lernpaket extrahieren pfad/zum/modul               # Schritt 1: Material
+.venv/bin/lernpaket generieren pfad/zum/modul --ziel ../lernpakete   # Schritt 2: KI
 ```
 
-Das Modulverzeichnis braucht die Pflichtquellen (`studienbrief*.pdf`, `*.mp4`);
-`altklausuren/` und `uebungen/` sind Optionalquellen. Schwere Werkzeuge sind
-optionale Extras und werden per Flag zugeschaltet:
+**Schritt 1 — Extrahieren** liest alle Materialien ein (Studienbrief-PDF,
+Vorlesungsvideos per Whisper-Transkription, Scan-Seiten per OCR, Folien) und
+schreibt das Ergebnis nach `<modul>/extraktion/`. Er läuft ohne LLM, nutzt
+automatisch alle installierten Werkzeuge (Abwahl per `--ohne-asr`/`--ohne-ocr`/
+`--ohne-folien`) und cacht Transkripte pro Video — nur der erste Lauf ist teuer.
 
-```bash
-pip install -e '.[asr]'    # faster-whisper  → --mit-asr    (Transkription)
-pip install -e '.[folien]' # PySceneDetect   → --mit-folien (Folien aus Video)
-pip install -e '.[ocr]'    # tesseract/poppler → --mit-ocr  (Scan-PDFs)
-```
+**Schritt 2 — Generieren** baut daraus das Lernpaket (Themen, Lehrblöcke,
+Quizfragen). Nur hier läuft das LLM — verschiedene Anbieter/Modelle lassen sich
+ausprobieren, ohne neu zu extrahieren. `lernpaket pfad/zum/modul` (ohne
+Unterkommando) führt weiterhin beides in einem Durchlauf aus.
+
+Das Modulverzeichnis braucht die Pflichtquellen (`studienbrief*.pdf`, Videos als
+`*.mp4`/`*.mkv`/…); `altklausuren/` und `uebungen/` sind Optionalquellen. Die
+schweren Werkzeuge sind pip-Extras (`asr`, `ocr`, `folien`); OCR braucht
+zusätzlich die Systempakete `tesseract` (mit `tesseract-lang`) und `poppler`.
 
 Die Lehrblöcke und Quizfragen generiert ein LLM (ADR 0002); ohne Anbindung läuft
 ein deterministischer Heuristik-Generator (deutlich geringere Qualität, gleicher
@@ -46,8 +54,8 @@ Umgebung (`LERNPAKET_LLM`, `LERNPAKET_LLM_MODELL`):
 | `ollama`    | lokaler Ollama-Server (`LERNPAKET_OLLAMA_URL`, Default `localhost:11434`) | `llama3.1` |
 
 ```bash
-.venv/bin/lernpaket pfad/zum/modul --llm gemini --llm-modell gemini-2.5-flash
-LERNPAKET_LLM=ollama LERNPAKET_LLM_MODELL=qwen3 .venv/bin/lernpaket pfad/zum/modul
+.venv/bin/lernpaket generieren pfad/zum/modul --llm gemini
+LERNPAKET_LLM=ollama LERNPAKET_LLM_MODELL=qwen3 .venv/bin/lernpaket generieren pfad/zum/modul
 ```
 
 Ohne explizite Wahl werden `anthropic`/`gemini` anhand vorhandener Schlüssel

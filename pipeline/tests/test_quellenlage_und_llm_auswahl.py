@@ -2,9 +2,13 @@
 Boilerplate-Themenfilter und LLM-Anbieter-Auswahl."""
 import pytest
 
+from datetime import datetime, timezone
+
 from lernpaket_pipeline.llm import (AnthropicLLM, GeminiLLM,
                                     OpenAiKompatibelLLM, hole_llm)
-from lernpaket_pipeline.pipeline import erzeuge_lernpaket, finde_quellen
+from lernpaket_pipeline.pipeline import (erzeuge_lernpaket, extrahiere_material,
+                                         finde_quellen, generiere_lernpaket,
+                                         lade_extraktion, schreibe_extraktion)
 from lernpaket_pipeline.themen import ist_boilerplate_titel
 
 from .conftest import STUDIENBRIEF_SEITEN
@@ -59,7 +63,7 @@ def test_materialluecke_wenn_videos_unausgewertet_bleiben(modul_dir_mit_vorlesun
     paket = erzeuge_lernpaket(modul_dir_mit_vorlesung)  # ohne ASR/Folien
     passende = [l for l in paket.manifest.materialluecken
                 if "nicht ausgewertet" in l.beschreibung]
-    assert passende and "--mit-asr" in passende[0].beschreibung
+    assert passende and "'asr'" in passende[0].beschreibung
 
 
 def test_keine_warnung_wenn_asr_die_videos_auswertet(modul_dir_mit_vorlesung,
@@ -68,6 +72,70 @@ def test_keine_warnung_wenn_asr_die_videos_auswertet(modul_dir_mit_vorlesung,
                               transkribierer=fake_transkribierer)
     assert not any("nicht ausgewertet" in l.beschreibung
                    for l in paket.manifest.materialluecken)
+
+
+# --- Zweischritt: Extraktion persistieren, Generierung getrennt --------------
+
+FIX_ZEIT = datetime(2026, 7, 19, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def test_zweischritt_liefert_dasselbe_paket_wie_komplettlauf(modul_dir_mit_optionalquellen):
+    modul = modul_dir_mit_optionalquellen
+    komplett = erzeuge_lernpaket(modul, jetzt=FIX_ZEIT)
+
+    extraktion = extrahiere_material(modul, jetzt=FIX_ZEIT)
+    schreibe_extraktion(extraktion, modul)
+    geladen = lade_extraktion(modul)
+    getrennt = generiere_lernpaket(geladen, modul_id=modul.name, titel=modul.name,
+                                   jetzt=FIX_ZEIT)
+
+    assert [c.text for c in getrennt.chunks] == [c.text for c in komplett.chunks]
+    assert [t.titel for t in getrennt.themen] == [t.titel for t in komplett.themen]
+    assert len(getrennt.fragen) == len(komplett.fragen)
+    assert getrennt.manifest.optionalquellen_vorhanden is True
+
+
+def test_generieren_ohne_extraktion_schlaegt_klar_fehl(modul_dir):
+    with pytest.raises(FileNotFoundError, match="lernpaket extrahieren"):
+        lade_extraktion(modul_dir)
+
+
+def test_transkript_cache_verhindert_zweite_asr(modul_dir_mit_vorlesung,
+                                                fake_transkribierer):
+    class ZaehlenderTranskribierer:
+        def __init__(self):
+            self.aufrufe = 0
+
+        def transkribiere(self, video):
+            self.aufrufe += 1
+            return fake_transkribierer.transkribiere(video)
+
+    erster = ZaehlenderTranskribierer()
+    extrahiere_material(modul_dir_mit_vorlesung, transkribierer=erster)
+    assert erster.aufrufe == 1
+
+    zweiter = ZaehlenderTranskribierer()
+    nochmal = extrahiere_material(modul_dir_mit_vorlesung, transkribierer=zweiter)
+    assert zweiter.aufrufe == 0  # Transkript kam aus dem Cache
+    assert any(c.quelle == "vorlesung" for c in nochmal.chunks)
+
+
+def test_geaenderte_videodatei_umgeht_den_cache(modul_dir_mit_vorlesung,
+                                               fake_transkribierer):
+    class ZaehlenderTranskribierer:
+        def __init__(self):
+            self.aufrufe = 0
+
+        def transkribiere(self, video):
+            self.aufrufe += 1
+            return fake_transkribierer.transkribiere(video)
+
+    extrahiere_material(modul_dir_mit_vorlesung,
+                        transkribierer=ZaehlenderTranskribierer())
+    (modul_dir_mit_vorlesung / "vorlesung-01.mp4").write_bytes(b"neuer laengerer inhalt")
+    zweiter = ZaehlenderTranskribierer()
+    extrahiere_material(modul_dir_mit_vorlesung, transkribierer=zweiter)
+    assert zweiter.aufrufe == 1  # andere Größe → neu transkribiert
 
 
 # --- Diagramm-Verlust --------------------------------------------------------
@@ -120,6 +188,9 @@ def test_materialluecke_fuer_unreparierbar_verklebten_text(modul_dir):
     "Monotonie des bestimmten Integrals: Gilt f(x) für alle x, dann",
     "Für n= 25beträgt die Streifenbreite",
     "Wenn auf eine Zufallsgröße sehr viele Ursachen wirken",
+    "Russia 17,6%",
+    "Tabelle 4: Approximation mithilfe des Vorwärts-Differenzenquotienten",
+    "Abb. 1.5: Dirichlet-Funktion",
 ])
 def test_boilerplate_und_artefakte_werden_erkannt(titel):
     assert ist_boilerplate_titel(titel)
