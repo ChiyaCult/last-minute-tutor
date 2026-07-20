@@ -1,0 +1,46 @@
+# Aufbereitung auf einem Server ausführen — alle Abhängigkeiten stecken im
+# Image (siehe pipeline/Dockerfile), Materialien und Ergebnis sind Volumes.
+#
+#   docker compose build
+#   docker compose run --rm pipeline extrahieren /input/mein_modul
+#   docker compose run --rm pipeline generieren /input/mein_modul \
+#       --ziel /lernpakete --llm gemini
+#
+# LLM-Schlüssel kommen aus der Host-Umgebung oder einer .env-Datei neben
+# dieser Datei (GEMINI_API_KEY=… etc.) — sie werden nie ins Image gebacken.
+#
+# Lokales LLM statt Remote-Anbieter (startet den Ollama-Dienst mit):
+#   docker compose --profile ollama up -d ollama
+#   docker compose exec ollama ollama pull llama3.1
+#   docker compose run --rm -e LERNPAKET_LLM=ollama pipeline generieren \
+#       /input/mein_modul --ziel /lernpakete
+services:
+  pipeline:
+    build: ./pipeline
+    image: lernpaket-pipeline
+    environment:
+      LERNPAKET_LLM: ${LERNPAKET_LLM:-}
+      LERNPAKET_LLM_MODELL: ${LERNPAKET_LLM_MODELL:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      # Im Compose-Netz heißt der Ollama-Dienst "ollama", nicht localhost.
+      LERNPAKET_OLLAMA_URL: ${LERNPAKET_OLLAMA_URL:-http://ollama:11434}
+      LERNPAKET_OLLAMA_MODELL: ${LERNPAKET_OLLAMA_MODELL:-}
+    volumes:
+      # Beschreibbar, weil `extrahieren` sein Zwischenergebnis nach
+      # <modul>/extraktion/ schreibt (wie im lokalen Workflow).
+      - ./input:/input
+      - ./lernpakete:/lernpakete
+      - whisper-modelle:/modelle
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    volumes:
+      - ollama-daten:/root/.ollama
+
+volumes:
+  whisper-modelle:
+  ollama-daten:
