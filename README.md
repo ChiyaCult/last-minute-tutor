@@ -78,8 +78,23 @@ Vorlesungsvideos per Whisper-Transkription, Scan-Seiten per OCR, Folien) und
 schreibt das Ergebnis nach `<modul>/extraktion/`. Er läuft ohne LLM, nutzt
 automatisch alle installierten Werkzeuge (Abwahl per `--ohne-asr`/`--ohne-ocr`/
 `--ohne-folien`) und cacht Transkripte pro Video — nur der erste Lauf ist teuer.
-Die erste Zeile der Ausgabe zeigt, was aktiv ist: `Werkzeuge: ASR ✓ · OCR ✓ ·
-Folien ✓`.
+
+Der Lauf meldet den Fortschritt laufend nach stderr (mit Zeitstempeln), z. B.
+`Transkribiere (ASR): KonzMod_07.mkv (193 MB) …` / `Transkript fertig: … 412
+Segmente in 1870 s`; `--quiet` schaltet die Logs ab.
+
+> **Lange ASR-Läufe wach halten (macOS):** Die Transkription mehrerer
+> Vorlesungen kann Stunden dauern und pausiert, sobald der Mac schläft. Mit
+> `caffeinate` bleibt er wach, bis der Lauf endet:
+>
+> ```bash
+> caffeinate -i -s uv run lernpaket extrahieren pfad/zum/modul
+> ```
+>
+> Läuft die Extraktion schon, koppel `caffeinate` an ihre Prozess-ID (endet dann
+> von selbst): `caffeinate -i -s -w $(pgrep -f "lernpaket extrahieren") &`. Der
+> Transkript-Cache schützt bei Abbruch — schon fertige Videos werden nicht neu
+> transkribiert, ein Neustart macht nur den Rest.
 
 **Schritt 2 — Generieren** baut daraus das Lernpaket (Themen, Lehrblöcke,
 Quizfragen). Nur hier läuft das LLM — verschiedene Anbieter/Modelle lassen sich

@@ -16,6 +16,8 @@ mit `relevanz_unsicherheit: hoch` (Issue #31).
 from __future__ import annotations
 
 import json
+import logging
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,6 +39,12 @@ from .vertrag import (Chunk, Lernpaket, Manifest, Materialluecke, Quelle,
 from .zielformat import erkenne_zielformat
 
 EXTRAKTIONS_ORDNER = "extraktion"
+
+log = logging.getLogger("lernpaket")
+
+
+def _mb(pfad: Path) -> float:
+    return pfad.stat().st_size / 1_048_576
 
 
 @dataclass
@@ -125,9 +133,15 @@ def _transkribiere_mit_cache(transkribierer: Transkribierer, video: Path,
     if cache_datei and cache_datei.exists():
         daten = json.loads(cache_datei.read_text(encoding="utf-8"))
         if daten.get("groesse") == groesse:
+            log.info("Transkript aus Cache: %s (%d Segmente)",
+                     video.name, len(daten.get("segmente", [])))
             return Transkript(datei=video.name, segmente=[
                 TranskriptSegment(**s) for s in daten.get("segmente", [])])
+    log.info("Transkribiere (ASR): %s (%.0f MB) …", video.name, _mb(video))
+    start = time.perf_counter()
     transkript = transkribierer.transkribiere(video)
+    log.info("Transkript fertig: %s — %d Segmente in %.0f s",
+             video.name, len(transkript.segmente), time.perf_counter() - start)
     if cache_datei:
         cache_datei.parent.mkdir(parents=True, exist_ok=True)
         cache_datei.write_text(json.dumps(
@@ -155,6 +169,10 @@ def extrahiere_material(
     quellen = finde_quellen(modul_dir)
     parser = parser or waehle_parser()
     materialluecken: List[Materialluecke] = []
+    log.info("Extraktion: Modul '%s'", modul_dir.name)
+    log.info("Quellen: Studienbrief %s · %d Vorlesung(en) · %d Altklausur(en) · %d Übung(en)",
+             quellen.studienbrief.name, len(quellen.vorlesungen),
+             len(quellen.altklausuren), len(quellen.uebungen))
 
     # Vorlesungslage prüfen: fehlende oder unausgewertete Videos werden gemeldet
     # statt still geschluckt (gleiche Linie wie Scan-Seiten, ADR 0003).
@@ -175,7 +193,10 @@ def extrahiere_material(
         ))
 
     # 1. Pflichtquelle Studienbrief (Textebene/Scan-Erkennung + OCR-Fallback).
+    log.info("Lese Studienbrief-PDF %s%s …", quellen.studienbrief.name,
+             " (mit OCR)" if ocr is not None else "")
     seiten = lies_pdf(quellen.studienbrief, ocr=ocr)
+    log.info("Studienbrief: %d Seite(n) gelesen", len(seiten))
     scans_ohne_text = [s.nummer for s in seiten if s.ist_scan and not s.text.strip()]
     if scans_ohne_text:
         if ocr is None:
@@ -215,29 +236,41 @@ def extrahiere_material(
     # 2. Vorlesungen: Audio → Transkript (mit Cache), Folien → Standbilder.
     transkript_cache = modul_dir / EXTRAKTIONS_ORDNER / "transkripte"
     transkript_chunks: List[Chunk] = []
-    for video in quellen.vorlesungen:
+    anzahl = len(quellen.vorlesungen)
+    for i, video in enumerate(quellen.vorlesungen, start=1):
+        if transkribierer is not None or szenen_erkenner is not None:
+            log.info("Vorlesung %d/%d: %s", i, anzahl, video.name)
         if transkribierer is not None:
             transkript = _transkribiere_mit_cache(transkribierer, video, transkript_cache)
             transkript_chunks.extend(
                 chunks_aus_transkript(transkript, len(chunks) + len(transkript_chunks)))
         if szenen_erkenner is not None and folien_leser is not None:
+            log.info("Folien-Erkennung: %s …", video.name)
+            start = time.perf_counter()
             folien = extrahiere_folien(video, szenen_erkenner, folien_leser)
             folien_texte = [
                 type(f)(nummer=f.nummer, zeit_sekunden=f.zeit_sekunden, bild=f.bild,
                         text=parser.nach_markdown(f.text)) for f in folien]
             transkript_chunks.extend(
                 chunks_aus_folien(folien_texte, len(chunks) + len(transkript_chunks)))
+            log.info("Folien fertig: %s — %d Folie(n) in %.0f s",
+                     video.name, len(folien_texte), time.perf_counter() - start)
     chunks.extend(transkript_chunks)
 
     # 3. Optionalquellen (falls vorhanden) als Relevanzsignal einlesen.
     optional_chunks: List[Chunk] = []
-    for pfad, quelle in ([(p, "altklausur") for p in quellen.altklausuren]
-                         + [(p, "uebung") for p in quellen.uebungen]):
+    optionalquellen = ([(p, "altklausur") for p in quellen.altklausuren]
+                       + [(p, "uebung") for p in quellen.uebungen])
+    if optionalquellen:
+        log.info("Lese %d Optionalquelle(n) (Altklausuren/Übungen) …", len(optionalquellen))
+    for pfad, quelle in optionalquellen:
         opt_seiten = _normalisiere_seiten(lies_pdf(pfad, ocr=ocr), parser)
         optional_chunks.extend(
             chunks_aus_seiten(opt_seiten, quelle=quelle,
                               start_zaehler=len(chunks) + len(optional_chunks)))
     chunks.extend(optional_chunks)
+    log.info("Extraktion fertig: %d Chunks, %d Materiallücke(n)",
+             len(chunks), len(materialluecken))
 
     return Extraktion(
         quellen=(
@@ -315,12 +348,18 @@ def generiere_lernpaket(
     gewichte_themen(themen, treffer, optional_chunks)
 
     zielformat = erkenne_zielformat(chunks)
+    log.info("Generierung: %d Thema/Themen, Zielformat-Vorschlag '%s'",
+             len(themen), zielformat.vorschlag)
 
     if generator is None:
         llm = hole_llm(llm_anbieter, llm_modell)
         generator = LLMGenerator(llm) if llm is not None else HeuristischerGenerator()
+    log.info("Generator: %s", type(generator).__name__)
     zuordnung = ordne_chunks_zu(themen, chunks)
+    start = time.perf_counter()
     ergebnis = generator.erzeuge(themen, zuordnung, zielformat.vorschlag)
+    log.info("Generierung fertig: %d Lehrblock/-blöcke, %d Frage(n) in %.0f s",
+             len(ergebnis.lehrbloecke), len(ergebnis.fragen), time.perf_counter() - start)
     materialluecken.extend(ergebnis.materialluecken)
     materialluecken.extend(verifiziere(ergebnis.fragen, ergebnis.lehrbloecke, chunks))
 
