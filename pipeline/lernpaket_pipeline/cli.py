@@ -7,12 +7,15 @@
         # Schritt 2: Extraktionsergebnis → Lernpaket; LLM-Wahl per --llm/--llm-modell
     lernpaket pfad/zum/modul --ziel ../lernpakete
         # beides nacheinander (Kompatibilitätsform; --mit-* Flags wie bisher)
+
+Fortschritts-Logs laufen nach stderr; `--quiet`/`-q` schaltet sie ab.
 """
 from __future__ import annotations
 
 import argparse
 import importlib.util
 import json
+import logging
 import shutil
 import sys
 from pathlib import Path
@@ -162,8 +165,24 @@ def _cmd_komplett(argv) -> int:
     return 0
 
 
+def _richte_logging_ein(argv: list) -> list:
+    """Konfiguriert Fortschritts-Logs nach stderr; `--quiet` schaltet sie ab.
+
+    Gibt argv ohne das globale --quiet zurück, damit die Unterkommandos es nicht
+    erneut parsen müssen.
+    """
+    quiet = "--quiet" in argv or "-q" in argv
+    argv = [a for a in argv if a not in ("--quiet", "-q")]
+    logging.basicConfig(
+        level=logging.WARNING if quiet else logging.INFO,
+        format="%(asctime)s  %(message)s", datefmt="%H:%M:%S",
+        stream=sys.stderr)
+    return argv
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    argv = _richte_logging_ein(argv)
     if argv and argv[0] == "extrahieren":
         return _cmd_extrahieren(argv[1:])
     if argv and argv[0] == "generieren":

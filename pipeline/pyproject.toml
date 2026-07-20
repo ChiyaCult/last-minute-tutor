@@ -22,6 +22,13 @@ asr = ["faster-whisper>=1.0"]
 # (im Dockerfile bereitgestellt).
 folien = ["scenedetect>=0.6", "opencv-python>=4.6"]
 ocr = ["pytesseract>=0.3", "pymupdf>=1.24", "pillow>=10"]
+# GPU-ASR: CUDA-12-Libs als pip-Wheels (kein System-CUDA nötig). cuDNN auf 9.x
+# gepinnt — CTranslate2 >= 4.5 (hier 4.8) verlangt cuDNN 9. Nur Linux (keine
+# CUDA-Wheels für macOS); zusätzlich LD_LIBRARY_PATH setzen (siehe README).
+gpu = [
+    "nvidia-cublas-cu12; platform_system == 'Linux'",
+    "nvidia-cudnn-cu12>=9,<10; platform_system == 'Linux'",
+]
 # Marker unterstützt erst ab Python 3.10 — Marker-Extra entsprechend markieren,
 # damit die 3.9-Umgebung auflösbar bleibt (Marker ist ein optionales Backend).
 marker = ["marker-pdf>=1.0; python_version >= '3.10'"]

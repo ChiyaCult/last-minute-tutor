@@ -9,31 +9,57 @@
 # LLM-Schlüssel kommen aus der Host-Umgebung oder einer .env-Datei neben
 # dieser Datei (GEMINI_API_KEY=… etc.) — sie werden nie ins Image gebacken.
 #
+# GPU-ASR (NVIDIA): braucht nvidia-container-toolkit auf dem Host. Nutzt das
+# CUDA-Basisimage (pipeline/Dockerfile.gpu) über das Profil "gpu":
+#   docker compose --profile gpu build
+#   docker compose --profile gpu run --rm pipeline-gpu extrahieren /input/mein_modul
+#
 # Lokales LLM statt Remote-Anbieter (startet den Ollama-Dienst mit):
 #   docker compose --profile ollama up -d ollama
 #   docker compose exec ollama ollama pull llama3.1
 #   docker compose run --rm -e LERNPAKET_LLM=ollama pipeline generieren \
 #       /input/mein_modul --ziel /lernpakete
+x-pipeline-env: &pipeline-env
+  LERNPAKET_LLM: ${LERNPAKET_LLM:-}
+  LERNPAKET_LLM_MODELL: ${LERNPAKET_LLM_MODELL:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+  GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+  # Im Compose-Netz heißt der Ollama-Dienst "ollama", nicht localhost.
+  LERNPAKET_OLLAMA_URL: ${LERNPAKET_OLLAMA_URL:-http://ollama:11434}
+  LERNPAKET_OLLAMA_MODELL: ${LERNPAKET_OLLAMA_MODELL:-}
+
+x-pipeline-volumes: &pipeline-volumes
+  # Input beschreibbar, weil `extrahieren` sein Zwischenergebnis nach
+  # <modul>/extraktion/ schreibt (wie im lokalen Workflow).
+  - ./input:/input
+  - ./lernpakete:/lernpakete
+  - whisper-modelle:/modelle
+
 services:
   pipeline:
     build: ./pipeline
     image: lernpaket-pipeline
-    environment:
-      LERNPAKET_LLM: ${LERNPAKET_LLM:-}
-      LERNPAKET_LLM_MODELL: ${LERNPAKET_LLM_MODELL:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
-      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
-      # Im Compose-Netz heißt der Ollama-Dienst "ollama", nicht localhost.
-      LERNPAKET_OLLAMA_URL: ${LERNPAKET_OLLAMA_URL:-http://ollama:11434}
-      LERNPAKET_OLLAMA_MODELL: ${LERNPAKET_OLLAMA_MODELL:-}
-    volumes:
-      # Beschreibbar, weil `extrahieren` sein Zwischenergebnis nach
-      # <modul>/extraktion/ schreibt (wie im lokalen Workflow).
-      - ./input:/input
-      - ./lernpakete:/lernpakete
-      - whisper-modelle:/modelle
+    environment: *pipeline-env
+    volumes: *pipeline-volumes
+
+  # GPU-Variante (Profil "gpu"): CUDA-Basisimage + reservierte NVIDIA-GPU.
+  pipeline-gpu:
+    build:
+      context: ./pipeline
+      dockerfile: Dockerfile.gpu
+    image: lernpaket-pipeline-gpu
+    profiles: ["gpu"]
+    environment: *pipeline-env
+    volumes: *pipeline-volumes
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
   ollama:
     image: ollama/ollama:latest
