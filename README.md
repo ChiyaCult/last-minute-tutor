@@ -117,8 +117,9 @@ Danach meldet der Lauf den Fortschritt laufend nach stderr (mit Zeitstempeln),
 z. B. `Transkribiere (ASR): KonzMod_07.mkv (193 MB) …` / `Transkript fertig: …
 412 Segmente in 1870 s`; `--quiet` schaltet die Logs ab. Im Terminal zeigen die
 langen Schritte zusätzlich einen Fortschrittsbalken — ASR nach Audiosekunden,
-das PDF-Lesen/OCR nach Seiten. Bei nicht-interaktiver Ausgabe (Docker, Logdatei)
-schalten sich die Balken automatisch ab, die Logs bleiben.
+das PDF-Lesen/OCR nach Seiten und die Folien-Szenenerkennung nach Frames. Bei
+nicht-interaktiver Ausgabe (Docker, Logdatei) schalten sich die Balken
+automatisch ab, die Logs bleiben.
 
 > **Lange ASR-Läufe wach halten (macOS):** Die Transkription mehrerer
 > Vorlesungen kann Stunden dauern und pausiert, sobald der Mac schläft. Mit
