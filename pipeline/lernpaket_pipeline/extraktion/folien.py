@@ -9,6 +9,7 @@ Beide Schritte sind Adapter; Tests nutzen Fakes und prüfen den Vertrag
 from __future__ import annotations
 
 import hashlib
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Protocol
@@ -52,7 +53,9 @@ class PySceneDetectErkenner:
         video = open_video(str(mp4))
         manager = SceneManager()
         manager.add_detector(AdaptiveDetector(adaptive_threshold=self.schwelle))
-        manager.detect_scenes(video)
+        # PySceneDetect bringt einen eigenen tqdm-Balken mit — nur im Terminal
+        # zeigen (wie die übrigen Balken), sonst still (Docker/Logdatei).
+        manager.detect_scenes(video, show_progress=sys.stderr.isatty())
         ergebnisse = []
         cap = cv2.VideoCapture(str(mp4))
         for start, _ in manager.get_scene_list():
