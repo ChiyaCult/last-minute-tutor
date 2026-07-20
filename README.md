@@ -51,14 +51,37 @@ brew install tesseract tesseract-lang     # macOS
 Kein poppler, kein ffmpeg nötig — die bringt uv/pip mit. Ohne die Extras
 (`uv sync`) läuft die reine PDF-Text-Pipeline ganz ohne System-Werkzeuge.
 
-**ASR auf Linux/GPU:** Die Transkription läuft standardmäßig auf der CPU. Auf
-einem System mit NVIDIA-GPU versucht faster-whisper automatisch die GPU zu
-nutzen; fehlen dabei die CUDA-Bibliotheken (Fehler
-`library libcublas.so.12 is not found or cannot be loaded`), fällt die Pipeline
-selbsttätig auf die CPU zurück und läuft weiter. Für echte GPU-Beschleunigung
-die passenden CUDA-12-Pakete installieren — am einfachsten per pip:
-`uv pip install nvidia-cublas-cu12 nvidia-cudnn-cu12`. Das Gerät lässt sich mit
-`LERNPAKET_ASR_DEVICE=cpu|cuda|auto` (Default `auto`) fest vorgeben.
+### ASR auf GPU (NVIDIA)
+
+GPU-Transkription ist deutlich schneller (die Qualität bleibt identisch — es ist
+dasselbe `large-v3`-Modell). faster-whisper nutzt mit `device=auto` automatisch
+eine GPU, sobald CUDA verfügbar ist. Fehlen die CUDA-Bibliotheken (typischer
+Fehler `library libcublas.so.12 is not found or cannot be loaded`), fällt die
+Pipeline selbsttätig auf die CPU zurück und läuft weiter — abgestürzt wird nicht.
+`CTranslate2` (das ASR-Backend, hier 4.8) braucht **CUDA 12 + cuDNN 9** und einen
+installierten NVIDIA-Treiber (`nvidia-smi`). Drei Wege, GPU wirklich zu nutzen:
+
+**A — CUDA-Libs per pip (kein System-CUDA, schnellster Weg auf Ubuntu):**
+```bash
+uv sync --extra asr --extra ocr --extra folien --extra gpu   # zieht CUDA-12-Wheels
+# CTranslate2 muss die .so-Dateien finden — Loader-Pfad setzen:
+export LD_LIBRARY_PATH=$(python -c "import os,nvidia.cublas.lib,nvidia.cudnn.lib;print(os.path.dirname(nvidia.cublas.lib.__file__)+':'+os.path.dirname(nvidia.cudnn.lib.__file__))")
+```
+
+**B — System-CUDA:** CUDA-12-Toolkit + cuDNN 9 aus den NVIDIA-Repos installieren
+(systemweit, dann entfällt das `LD_LIBRARY_PATH`-Setzen).
+
+**C — GPU-Docker (reproduzierbar für den Server):** Das Profil `gpu` baut aus
+`pipeline/Dockerfile.gpu` (CUDA-Basisimage, CUDA/cuDNN inklusive) und reserviert
+die GPU. Braucht `nvidia-container-toolkit` auf dem Host:
+```bash
+docker compose --profile gpu build
+docker compose --profile gpu run --rm pipeline-gpu extrahieren /input/mein_modul
+```
+
+Das Gerät lässt sich mit `LERNPAKET_ASR_DEVICE=cpu|cuda|auto` (Default `auto`)
+fest vorgeben. Häufigste Fehlerquelle bei „cannot be loaded": eine cuDNN-**8**-
+statt **9**-Version — das `gpu`-Extra pinnt bereits cuDNN 9.
 
 <details><summary>Alternative ohne uv: klassisch mit pip</summary>
 

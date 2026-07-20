@@ -1,0 +1,34 @@
+# GPU-Variante der Aufbereitung: CUDA 12 + cuDNN 9 kommen aus dem NVIDIA-
+# Basisimage, damit faster-whisper die GPU nutzt. Braucht auf dem Host das
+# nvidia-container-toolkit und Start mit GPU-Zugriff (docker-compose.yml,
+# Profil "gpu"). Fehlt die GPU zur Laufzeit, fällt die ASR automatisch auf CPU
+# zurück (LERNPAKET_ASR_DEVICE).
+#
+# UNGETESTET (hier kein GPU-Host) — auf dem Zielserver verifizieren.
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+
+# Python + die eine System-Abhängigkeit (tesseract) und die OpenCV-Runtime-Libs.
+# CUDA/cuDNN sind bereits im Basisimage. ffmpeg/PDF-Rendering bringen die
+# pip-Wheels mit.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-venv \
+        tesseract-ocr tesseract-ocr-deu \
+        libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# uv als Installer — installiert exakt die in uv.lock gepinnten Versionen.
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+COPY lernpaket_pipeline ./lernpaket_pipeline
+RUN uv sync --frozen --extra asr --extra ocr --extra folien
+
+# GPU bevorzugen; ohne verfügbare GPU greift der CPU-Fallback im Code.
+ENV LERNPAKET_ASR_DEVICE=cuda
+# Whisper-/HuggingFace-Modelle (~3 GB) leben in einem Volume, nicht im Image.
+ENV HF_HOME=/modelle
+VOLUME ["/modelle"]
+
+ENTRYPOINT ["/app/.venv/bin/lernpaket"]
+CMD ["--help"]
