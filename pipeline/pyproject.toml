@@ -16,9 +16,15 @@ dev = ["pytest>=7"]
 # PyMuPDF rendert die Scan-Seiten pip-only (kein poppler); ffmpeg bringen av/opencv
 # als Bibliothek mit — die OCR-Engine tesseract bleibt die einzige System-Abhängigkeit.
 asr = ["faster-whisper>=1.0"]
-folien = ["scenedetect[opencv]>=0.6"]
+# OpenCV explizit: in scenedetect 0.7 ist es Kern-Dependency (kein [opencv]-Extra
+# mehr), in 0.6 ein Extra — explizit gelistet klappt es versionsunabhängig.
+# Auf macOS ohne Zusatz-Libs; unter Linux/Docker braucht das volle OpenCV libGL
+# (im Dockerfile bereitgestellt).
+folien = ["scenedetect>=0.6", "opencv-python>=4.6"]
 ocr = ["pytesseract>=0.3", "pymupdf>=1.24", "pillow>=10"]
-marker = ["marker-pdf>=1.0"]
+# Marker unterstützt erst ab Python 3.10 — Marker-Extra entsprechend markieren,
+# damit die 3.9-Umgebung auflösbar bleibt (Marker ist ein optionales Backend).
+marker = ["marker-pdf>=1.0; python_version >= '3.10'"]
 
 [project.scripts]
 lernpaket = "lernpaket_pipeline.cli:main"
