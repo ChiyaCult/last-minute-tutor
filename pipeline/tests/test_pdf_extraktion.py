@@ -1,10 +1,37 @@
-"""Textebene-vs-Scan-Erkennung und OCR-Fallback (Issue #30)."""
+"""Textebene-vs-Scan-Erkennung, OCR-Fallback (Issue #30) und
+Verklebt-Erkennung mit Zweitextraktion."""
 from pathlib import Path
+from typing import Dict, List
 
-from lernpaket_pipeline.extraktion.pdf import ist_scan_pdf, lies_pdf
+from lernpaket_pipeline.extraktion.pdf import ist_scan_pdf, ist_verklebt, lies_pdf
 
 from .conftest import FakeOcr
 from .pdf_helfer import schreibe_pdf
+
+VERKLEBTE_ZEILEN = [
+    "InAbb.1.16werdenverschiedeneMöglichkeitenaufgezeigt,wieEinschränkungen",
+    "fürBeziehungstypendefiniertwerdenkönnen.EinBeziehungstypwirdals",
+    "RautedargestelltdiemitLinienzweiEntity-Typenverbindet.DieseNotation",
+    "wirddurchzusätzlicheMarkierungennocherweitertunderklärt.",
+    "DieseMarkierungenbezeichnendieArtderBeziehungnochetwasgenauer.",
+]
+REPARIERTE_ZEILEN = (
+    "In Abb. 1.16 werden verschiedene Möglichkeiten aufgezeigt, wie "
+    "Einschränkungen für Beziehungstypen definiert werden können. Ein "
+    "Beziehungstyp wird als Raute dargestellt, die mit Linien zwei "
+    "Entity-Typen verbindet.")
+
+
+class FakeZweitextraktor:
+    """Liefert für angefragte Seiten festen reparierten Text."""
+
+    def __init__(self, text: str = REPARIERTE_ZEILEN):
+        self.text = text
+        self.aufrufe: List[List[int]] = []
+
+    def lies_seiten(self, pfad: Path, nummern: List[int]) -> Dict[int, str]:
+        self.aufrufe.append(list(nummern))
+        return {n: self.text for n in nummern}
 
 
 def test_textebene_wird_ausgelesen(tmp_path: Path):
@@ -41,3 +68,35 @@ def test_text_pdf_ist_kein_scan(tmp_path: Path):
     pdf = schreibe_pdf(tmp_path / "text.pdf",
                        [["Ganz normale Seite mit ordentlich viel Textinhalt."]])
     assert ist_scan_pdf(pdf) is False
+
+
+def test_ist_verklebt_erkennt_fehlende_leerzeichen():
+    assert ist_verklebt("\n".join(VERKLEBTE_ZEILEN)) is True
+    assert ist_verklebt(REPARIERTE_ZEILEN) is False
+
+
+def test_ist_verklebt_toleriert_urls_und_einzelne_komposita():
+    text = ("Siehe https://beispiel.example/sehr/langer/pfad/zur/quelle-dokument "
+            "sowie die Donaudampfschifffahrtsgesellschaft als Beispiel für "
+            "ein langes Kompositum im ansonsten normalen Text hier.")
+    assert ist_verklebt(text) is False
+
+
+def test_verklebte_seite_wird_nachextrahiert(tmp_path: Path):
+    pdf = schreibe_pdf(tmp_path / "verklebt.pdf", [
+        ["Ganz normale erste Seite mit ordentlich viel Textinhalt darauf."],
+        VERKLEBTE_ZEILEN,
+    ])
+    fake = FakeZweitextraktor()
+    seiten = lies_pdf(pdf, zweitextraktor=fake)
+    assert fake.aufrufe == [[2]]  # nur die verklebte Seite wird nachextrahiert
+    assert "werden verschiedene Möglichkeiten" in seiten[1].text
+    assert "normale erste Seite" in seiten[0].text
+
+
+def test_schlechteres_zweitergebnis_wird_verworfen(tmp_path: Path):
+    pdf = schreibe_pdf(tmp_path / "verklebt.pdf", [VERKLEBTE_ZEILEN])
+    fake = FakeZweitextraktor(text="\n".join(VERKLEBTE_ZEILEN) + "\nnochverklebtererText")
+    seiten = lies_pdf(pdf, zweitextraktor=fake)
+    assert seiten[0].text.splitlines()[0] == VERKLEBTE_ZEILEN[0]
+    assert ist_verklebt(seiten[0].text) is True  # Pipeline meldet das als Lücke

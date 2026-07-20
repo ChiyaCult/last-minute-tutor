@@ -7,7 +7,7 @@ name = "lernpaket-pipeline"
 version = "0.2.0"
 description = "Aufbereitung: erzeugt pro Modul ein Lernpaket aus den Rohmaterialien"
 requires-python = ">=3.9"
-dependencies = ["pypdf>=4"]
+dependencies = ["pypdf>=4", "pdfminer.six>=20231228"]
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]

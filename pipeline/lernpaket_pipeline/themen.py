@@ -26,6 +26,68 @@ _KAPITEL_RE = re.compile(
     re.MULTILINE | re.IGNORECASE,
 )
 
+# Strukturelle Abschnitte ohne eigenständig lernbaren Inhalt — sie würden den
+# Themenkatalog verwässern und im Player als leere "Lücken" auftauchen.
+BOILERPLATE_TITEL = frozenset({
+    "lernergebnisse", "lernziele", "advance organizer", "zusammenfassung",
+    "übungen", "uebungen", "übung", "uebung", "übungsaufgaben",
+    "uebungsaufgaben", "kontrollaufgaben", "impressum", "vorwort",
+    "inhaltsverzeichnis", "inhalt", "literatur", "literaturverzeichnis",
+    "abbildungsverzeichnis", "tabellenverzeichnis", "stichwortverzeichnis",
+    "index", "glossar", "anhang",
+})
+# Lösungsabschnitte sind Aufgaben-Anhänge, Bild-/Tabellenunterschriften keine
+# Überschriften — beides keine lernbaren Themen.
+_BOILERPLATE_PREFIXE = ("lösung zu ", "loesung zu ", "lösungen zu ", "loesungen zu ",
+                        "tabelle ", "abb. ", "abbildung ", "listing ")
+# Endet ein Titel auf einem Funktionswort, ist er ein im Umbruch abgerissenes
+# Satzfragment (z. B. "Lösung zu Kontrollaufgabe 1.2 auf").
+_ABRISS_ENDWOERTER = frozenset({
+    "auf", "der", "die", "das", "und", "oder", "mit", "von", "für", "fuer",
+    "zu", "zur", "zum", "im", "in", "am", "an", "bei", "dann", "gilt", "ist",
+    "sind", "wird", "werden", "als", "des", "dem", "den", "eine", "ein",
+})
+# Beginnt ein "Titel" mit einer Konjunktion, ist es ein Satzanfang aus dem
+# Fließtext, den die Überschriften-Erkennung fälschlich erwischt hat.
+_ABRISS_STARTWOERTER = frozenset({
+    "wenn", "dann", "daher", "deshalb", "somit", "also", "dabei", "hierbei",
+    "ferner", "zudem", "außerdem", "ausserdem", "beispielsweise", "zwar",
+})
+# Punktführer wie "Thema ..... 33" bzw. "Thema . . . . ." (Inhaltsverzeichnis).
+_PUNKTREIHE_RE = re.compile(r"\.{4,}|(?:\.\s+){3,}\.")
+_SEITEN_SUFFIX_RE = re.compile(r"\s+Seite\s+\d+\s*$", re.IGNORECASE)
+# Kapitel-/Abschnittsnummern oberhalb dieser Grenze sind fast immer Artefakte
+# (Postleitzahlen, Jahreszahlen, Seitenzahlen aus dem Inhaltsverzeichnis).
+MAX_KAPITELNUMMER = 50
+
+
+def _bereinige_titel(titel: str) -> str:
+    """Entfernt Seitenangaben und Punktführer-Reste am Titelende."""
+    titel = _SEITEN_SUFFIX_RE.sub("", titel.strip())
+    return titel.rstrip(" .").strip()
+
+
+def ist_boilerplate_titel(titel: str) -> bool:
+    """True für Überschriften, die kein lernbares Thema tragen.
+
+    Neben den bekannten Struktur-Abschnitten (`BOILERPLATE_TITEL`) fallen auch
+    Extraktions-Artefakte darunter: Inhaltsverzeichnis-Zeilen mit Punktführern
+    und im Umbruch abgerissene Satzfragmente (Titel endet auf "-", ":" oder ",").
+    """
+    if _PUNKTREIHE_RE.search(titel):
+        return True
+    kern = _bereinige_titel(titel)
+    # "=" und "%" gehören in Formeln bzw. Tabellenzeilen, nicht in Überschriften.
+    if not kern or kern.endswith(("-", ":", ",")) or "=" in kern or "%" in kern:
+        return True
+    kern_klein = kern.lower()
+    if kern_klein.startswith(_BOILERPLATE_PREFIXE):
+        return True
+    woerter = kern_klein.split()
+    if woerter[0] in _ABRISS_STARTWOERTER or woerter[-1] in _ABRISS_ENDWOERTER:
+        return True
+    return kern_klein in BOILERPLATE_TITEL
+
 
 @dataclass
 class _Kandidat:
@@ -41,13 +103,18 @@ def _finde_kandidaten(chunks: List[Chunk]) -> List[_Kandidat]:
     for chunk in chunks:
         for m in _UEBERSCHRIFT_RE.finditer(chunk.text):
             nummer, titel = m.group(1), m.group(2).strip().rstrip(".")
-            if _WORT_RE.search(titel) is None:
+            if _WORT_RE.search(titel) is None or ist_boilerplate_titel(titel):
                 continue
-            kandidaten.append(_Kandidat(nummer=nummer, titel=titel,
+            if int(nummer.split(".", 1)[0]) > MAX_KAPITELNUMMER:
+                continue
+            kandidaten.append(_Kandidat(nummer=nummer, titel=_bereinige_titel(titel),
                                         ebene=nummer.count(".") + 1,
                                         chunk_id=chunk.id, position=chunk.position))
         for m in _KAPITEL_RE.finditer(chunk.text):
-            kandidaten.append(_Kandidat(nummer=m.group(1), titel=m.group(2).strip(),
+            titel = m.group(2).strip()
+            if ist_boilerplate_titel(titel):
+                continue
+            kandidaten.append(_Kandidat(nummer=m.group(1), titel=_bereinige_titel(titel),
                                         ebene=1, chunk_id=chunk.id, position=chunk.position))
     # Duplikate (gleiche Nummer) verwerfen, Reihenfolge des Auftretens behalten.
     gesehen = set()

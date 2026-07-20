@@ -13,7 +13,7 @@ import {
 } from './db.js';
 import { bestimmeLuecken, filtereLehrbloecke, diagnoseFragen, uebungsFragen } from './adaptiv.js';
 import { baueWiederholungsplan, tageBis } from './plan.js';
-import { erstelleTutor, erstelleAnthropicLlm } from './tutor.js';
+import { erstelleTutor, erstelleLlm, LLM_HINWEIS } from './tutor.js';
 
 const HIER = dirname(fileURLToPath(import.meta.url));
 const MIME = {
@@ -41,7 +41,7 @@ export function erstelleApp({
   lernpaketeDir,
   datenDir,
   dbPfad = null,
-  llmCall = erstelleAnthropicLlm(),
+  llmCall = erstelleLlm(),
 } = {}) {
   const pakete = ladeAlleLernpakete(lernpaketeDir);
   const db = oeffneDb(dbPfad ?? join(datenDir, 'fortschritt.db'));
@@ -287,8 +287,8 @@ if (istHauptmodul) {
   });
   server.listen(port, () => {
     console.log(`Player läuft: http://localhost:${port}`);
-    if (!process.env.ANTHROPIC_API_KEY) {
-      console.log('Hinweis: ANTHROPIC_API_KEY nicht gesetzt — Tutormodus ist deaktiviert.');
+    if (!erstelleLlm()) {
+      console.log(`Hinweis: Tutormodus ist deaktiviert. ${LLM_HINWEIS}`);
     }
   });
 }

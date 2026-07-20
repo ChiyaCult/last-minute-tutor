@@ -15,28 +15,53 @@ player/       Node/JS-Player: Diagnosequiz, adaptive Lehrtiefe, Wiederholungspla
               Fortschritt (SQLite), Tutormodus (Backend-Proxy)
 ```
 
-## Aufbereitung (einmalig pro Modul)
+## Aufbereitung (einmalig pro Modul, zwei Schritte)
 
 ```bash
 cd pipeline
-python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/lernpaket pfad/zum/modul --ziel ../lernpakete
+python3 -m venv .venv && .venv/bin/pip install -e '.[dev,asr,ocr]'
+
+.venv/bin/lernpaket extrahieren pfad/zum/modul               # Schritt 1: Material
+.venv/bin/lernpaket generieren pfad/zum/modul --ziel ../lernpakete   # Schritt 2: KI
 ```
 
-Das Modulverzeichnis braucht die Pflichtquellen (`studienbrief*.pdf`, `*.mp4`);
-`altklausuren/` und `uebungen/` sind Optionalquellen. Schwere Werkzeuge sind
-optionale Extras und werden per Flag zugeschaltet:
+**Schritt 1 — Extrahieren** liest alle Materialien ein (Studienbrief-PDF,
+Vorlesungsvideos per Whisper-Transkription, Scan-Seiten per OCR, Folien) und
+schreibt das Ergebnis nach `<modul>/extraktion/`. Er läuft ohne LLM, nutzt
+automatisch alle installierten Werkzeuge (Abwahl per `--ohne-asr`/`--ohne-ocr`/
+`--ohne-folien`) und cacht Transkripte pro Video — nur der erste Lauf ist teuer.
+
+**Schritt 2 — Generieren** baut daraus das Lernpaket (Themen, Lehrblöcke,
+Quizfragen). Nur hier läuft das LLM — verschiedene Anbieter/Modelle lassen sich
+ausprobieren, ohne neu zu extrahieren. `lernpaket pfad/zum/modul` (ohne
+Unterkommando) führt weiterhin beides in einem Durchlauf aus.
+
+Das Modulverzeichnis braucht die Pflichtquellen (`studienbrief*.pdf`, Videos als
+`*.mp4`/`*.mkv`/…); `altklausuren/` und `uebungen/` sind Optionalquellen. Die
+schweren Werkzeuge sind pip-Extras (`asr`, `ocr`, `folien`); OCR braucht
+zusätzlich die Systempakete `tesseract` (mit `tesseract-lang`) und `poppler`.
+
+Die Lehrblöcke und Quizfragen generiert ein LLM (ADR 0002); ohne Anbindung läuft
+ein deterministischer Heuristik-Generator (deutlich geringere Qualität, gleicher
+Vertrag). Vier Anbieter stehen zur Wahl — per `--llm`/`--llm-modell` oder
+Umgebung (`LERNPAKET_LLM`, `LERNPAKET_LLM_MODELL`):
+
+| Anbieter    | Schlüssel/Voraussetzung                | Standardmodell    |
+| ----------- | -------------------------------------- | ----------------- |
+| `anthropic` | `ANTHROPIC_API_KEY`                    | `claude-sonnet-5` |
+| `gemini`    | `GEMINI_API_KEY` (o. `GOOGLE_API_KEY`) | `gemini-flash-latest` |
+| `copilot`   | `GITHUB_TOKEN` (GitHub Models)         | `openai/gpt-4o`   |
+| `ollama`    | lokaler Ollama-Server (`LERNPAKET_OLLAMA_URL`, Default `localhost:11434`) | `llama3.1` |
 
 ```bash
-pip install -e '.[asr]'    # faster-whisper  → --mit-asr    (Transkription)
-pip install -e '.[folien]' # PySceneDetect   → --mit-folien (Folien aus Video)
-pip install -e '.[ocr]'    # tesseract/poppler → --mit-ocr  (Scan-PDFs)
+.venv/bin/lernpaket generieren pfad/zum/modul --llm gemini
+LERNPAKET_LLM=ollama LERNPAKET_LLM_MODELL=qwen3 .venv/bin/lernpaket generieren pfad/zum/modul
 ```
 
-Mit gesetztem `ANTHROPIC_API_KEY` generiert das Remote-Spitzenmodell die Lehrblöcke
-und Quizfragen (ADR 0002); ohne Schlüssel läuft ein deterministischer
-Heuristik-Generator (geringere Qualität, gleicher Vertrag). Jedes Artefakt trägt
-Belege; ein Verifikationsdurchlauf prüft Antworten gegen die Quelle (ADR 0003).
+Ohne explizite Wahl werden `anthropic`/`gemini` anhand vorhandener Schlüssel
+auto-erkannt; `copilot` und `ollama` müssen explizit gewählt werden. Jedes
+Artefakt trägt Belege; ein Verifikationsdurchlauf prüft Antworten gegen die
+Quelle (ADR 0003).
 
 ## Lernphase (Player)
 
@@ -48,8 +73,10 @@ npm start          # http://localhost:4321
 
 Der Player scannt `lernpakete/` (mehrere Module unabhängig), fährt Diagnosequiz →
 Lücken → Lehrtiefe, plant fensteradaptiv (Triage ≤ 4 Tage, sonst Spacing, ADR 0006)
-und speichert Fortschritt in `player/daten/fortschritt.db`. Für den Tutormodus
-`ANTHROPIC_API_KEY` in der Server-Umgebung setzen — der Schlüssel bleibt im Backend.
+und speichert Fortschritt in `player/daten/fortschritt.db`. Der Tutormodus nutzt
+dieselbe LLM-Anbieter-Auswahl wie die Pipeline (`LERNPAKET_LLM` bzw.
+Auto-Erkennung über `ANTHROPIC_API_KEY`/`GEMINI_API_KEY`) — Schlüssel bleiben in
+der Server-Umgebung und erreichen nie das Frontend.
 
 ## Tests
 

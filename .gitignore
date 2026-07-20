@@ -6,3 +6,4 @@ pipeline/.venv/
 player/node_modules/
 player/daten/
 lernpakete/
+input/
