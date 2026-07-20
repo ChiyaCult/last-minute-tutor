@@ -2,11 +2,53 @@
 Relevanzsignal aus dem Transkript (Issue #23)."""
 from pathlib import Path
 
+import pytest
+
 from lernpaket_pipeline.chunks import chunks_aus_transkript
+from lernpaket_pipeline.extraktion.audio import FasterWhisperTranskribierer
 from lernpaket_pipeline.pipeline import erzeuge_lernpaket
 from lernpaket_pipeline.relevanz import finde_relevanz_marker
 
 from .conftest import FakeTranskribierer
+
+
+class _FakeWhisperModel:
+    """Simuliert fehlende CUDA-Libs: schlägt fehl, außer auf CPU."""
+
+    def __init__(self, modell, device, compute_type):
+        self.aufrufe = _FakeWhisperModel.aufrufe
+        self.aufrufe.append((device, compute_type))
+        if device != "cpu":
+            raise RuntimeError(
+                "Library libcublas.so.12 is not found or cannot be loaded")
+
+    aufrufe: list = []
+
+
+def test_asr_faellt_bei_fehlendem_cuda_auf_cpu_zurueck():
+    _FakeWhisperModel.aufrufe = []
+    tr = FasterWhisperTranskribierer(device="auto")
+    modell = tr._lade_modell(_FakeWhisperModel)
+    assert isinstance(modell, _FakeWhisperModel)
+    # Erst der auto-Versuch (scheitert an CUDA), dann der CPU-Fallback.
+    assert _FakeWhisperModel.aufrufe == [("auto", "auto"), ("cpu", "int8")]
+
+
+def test_asr_cpu_explizit_ohne_endlos_fallback():
+    class _ImmerFehler:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("boom")
+
+    tr = FasterWhisperTranskribierer(device="cpu")
+    with pytest.raises(RuntimeError, match="boom"):
+        tr._lade_modell(_ImmerFehler)  # device=cpu → kein Fallback, Fehler durchreichen
+
+
+def test_asr_device_aus_umgebung(monkeypatch):
+    monkeypatch.setenv("LERNPAKET_ASR_DEVICE", "cuda")
+    monkeypatch.setenv("LERNPAKET_ASR_COMPUTE", "float16")
+    tr = FasterWhisperTranskribierer()
+    assert tr.device == "cuda" and tr.compute_type == "float16"
 
 
 def test_transkript_chunks_tragen_zeitstempel(fake_transkribierer):

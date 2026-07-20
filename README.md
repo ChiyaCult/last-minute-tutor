@@ -51,6 +51,15 @@ brew install tesseract tesseract-lang     # macOS
 Kein poppler, kein ffmpeg nötig — die bringt uv/pip mit. Ohne die Extras
 (`uv sync`) läuft die reine PDF-Text-Pipeline ganz ohne System-Werkzeuge.
 
+**ASR auf Linux/GPU:** Die Transkription läuft standardmäßig auf der CPU. Auf
+einem System mit NVIDIA-GPU versucht faster-whisper automatisch die GPU zu
+nutzen; fehlen dabei die CUDA-Bibliotheken (Fehler
+`library libcublas.so.12 is not found or cannot be loaded`), fällt die Pipeline
+selbsttätig auf die CPU zurück und läuft weiter. Für echte GPU-Beschleunigung
+die passenden CUDA-12-Pakete installieren — am einfachsten per pip:
+`uv pip install nvidia-cublas-cu12 nvidia-cudnn-cu12`. Das Gerät lässt sich mit
+`LERNPAKET_ASR_DEVICE=cpu|cuda|auto` (Default `auto`) fest vorgeben.
+
 <details><summary>Alternative ohne uv: klassisch mit pip</summary>
 
 ```bash
@@ -78,10 +87,12 @@ Vorlesungsvideos per Whisper-Transkription, Scan-Seiten per OCR, Folien) und
 schreibt das Ergebnis nach `<modul>/extraktion/`. Er läuft ohne LLM, nutzt
 automatisch alle installierten Werkzeuge (Abwahl per `--ohne-asr`/`--ohne-ocr`/
 `--ohne-folien`) und cacht Transkripte pro Video — nur der erste Lauf ist teuer.
+Die erste Zeile der Ausgabe zeigt, was aktiv ist: `Werkzeuge: ASR ✓ · OCR ✓ ·
+Folien ✓`.
 
-Der Lauf meldet den Fortschritt laufend nach stderr (mit Zeitstempeln), z. B.
-`Transkribiere (ASR): KonzMod_07.mkv (193 MB) …` / `Transkript fertig: … 412
-Segmente in 1870 s`; `--quiet` schaltet die Logs ab.
+Danach meldet der Lauf den Fortschritt laufend nach stderr (mit Zeitstempeln),
+z. B. `Transkribiere (ASR): KonzMod_07.mkv (193 MB) …` / `Transkript fertig: …
+412 Segmente in 1870 s`; `--quiet` schaltet die Logs ab.
 
 > **Lange ASR-Läufe wach halten (macOS):** Die Transkription mehrerer
 > Vorlesungen kann Stunden dauern und pausiert, sobald der Mac schläft. Mit
