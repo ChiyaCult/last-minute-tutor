@@ -13,9 +13,11 @@ dependencies = ["pypdf>=4", "pdfminer.six>=20231228"]
 dev = ["pytest>=7"]
 # Schwere Extraktionswerkzeuge sind bewusst optional (ADR 0004: Werkzeuge austauschbar).
 # Ohne sie laufen die jeweiligen Adapter nicht, die Pipeline degradiert kontrolliert.
+# PyMuPDF rendert die Scan-Seiten pip-only (kein poppler); ffmpeg bringen av/opencv
+# als Bibliothek mit — die OCR-Engine tesseract bleibt die einzige System-Abhängigkeit.
 asr = ["faster-whisper>=1.0"]
 folien = ["scenedetect[opencv]>=0.6"]
-ocr = ["pytesseract>=0.3", "pdf2image>=1.16"]
+ocr = ["pytesseract>=0.3", "pymupdf>=1.24", "pillow>=10"]
 marker = ["marker-pdf>=1.0"]
 
 [project.scripts]

@@ -38,22 +38,32 @@ class Ocr(Protocol):
 
 
 class TesseractOcr:
-    """Reale OCR via pdf2image + pytesseract (optional installierbar: extra 'ocr')."""
+    """Reale OCR: PyMuPDF rendert die Seite (pip-only), tesseract erkennt den Text.
 
-    def __init__(self, sprache: str = "deu"):
+    Optional installierbar über das Extra 'ocr'. Einzige System-Abhängigkeit ist
+    die OCR-Engine tesseract (mit deutschen Sprachdaten); das PDF-Rendering
+    braucht dank PyMuPDF kein poppler mehr.
+    """
+
+    def __init__(self, sprache: str = "deu", dpi: int = 300):
         self.sprache = sprache
+        self.dpi = dpi
 
     def lese_seite(self, pdf: Path, seitennummer: int) -> str:
         try:
             import pytesseract  # type: ignore
-            from pdf2image import convert_from_path  # type: ignore
+            import fitz  # type: ignore  # PyMuPDF
+            from PIL import Image  # type: ignore
         except ImportError as exc:  # pragma: no cover - abhängig von Umgebung
             raise RuntimeError(
                 "OCR-Fallback benötigt die Extras 'ocr' (pip install "
-                "'lernpaket-pipeline[ocr]') sowie tesseract und poppler."
+                "'lernpaket-pipeline[ocr]') sowie die System-Engine tesseract "
+                "mit deutschen Sprachdaten."
             ) from exc
-        bilder = convert_from_path(str(pdf), first_page=seitennummer, last_page=seitennummer)
-        return pytesseract.image_to_string(bilder[0], lang=self.sprache)
+        with fitz.open(str(pdf)) as dokument:
+            pix = dokument[seitennummer - 1].get_pixmap(dpi=self.dpi)  # 0-basiert
+            bild = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+        return pytesseract.image_to_string(bild, lang=self.sprache)
 
 
 def hat_textebene(seite_text: str) -> bool:
@@ -93,6 +103,11 @@ class PdfMinerExtraktor:
             from pdfminer.high_level import extract_text  # type: ignore
         except ImportError:  # pragma: no cover - Abhängigkeit fehlt
             return {}
+        # pdfminer warnt lautstark über Grafik-Details, die es nicht versteht
+        # (z. B. Musterfarben: "Cannot set gray non-stroke color … /'p5'").
+        # Für die Textextraktion ist das irrelevant — nur echte Fehler zeigen.
+        import logging
+        logging.getLogger("pdfminer").setLevel(logging.ERROR)
         nummern = sorted(set(nummern))
         text = extract_text(str(pfad), page_numbers=[n - 1 for n in nummern])
         teile = text.split("\f")

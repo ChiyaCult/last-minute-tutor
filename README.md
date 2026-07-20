@@ -15,23 +15,62 @@ player/       Node/JS-Player: Diagnosequiz, adaptive Lehrtiefe, Wiederholungspla
               Fortschritt (SQLite), Tutormodus (Backend-Proxy)
 ```
 
-## Aufbereitung (einmalig pro Modul)
+## Aufbereitung (einmalig pro Modul, zwei Schritte)
+
+### Einmalige Installation
 
 ```bash
 cd pipeline
-python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/lernpaket pfad/zum/modul --ziel ../lernpakete
+python3 -m venv .venv
+.venv/bin/pip install -e '.[dev,asr,ocr,folien]'   # alles inkl. schwerer Werkzeuge
 ```
 
-Das Modulverzeichnis braucht die Pflichtquellen (`studienbrief*.pdf`, `*.mp4`);
-`altklausuren/` und `uebungen/` sind Optionalquellen. Schwere Werkzeuge sind
-optionale Extras und werden per Flag zugeschaltet:
+Das eine `pip install` zieht **alle** Abhängigkeiten in die venv — inklusive
+ffmpeg (steckt in den Paketen `av`/`opencv`) und dem PDF-Rendering (PyMuPDF).
+Die pip-Extras kannst du auch weglassen, wenn du das jeweilige Werkzeug nicht
+brauchst:
+
+| Extra    | Werkzeug                        | wofür                              |
+| -------- | ------------------------------- | ---------------------------------- |
+| `asr`    | faster-whisper                  | Vorlesungsvideos transkribieren    |
+| `ocr`    | pytesseract + PyMuPDF           | Text aus Scan-Seiten lesen         |
+| `folien` | PySceneDetect + OpenCV          | Folien-Standbilder aus Videos      |
+| `dev`    | pytest                          | Tests                              |
+
+**Eine einzige Sache muss außerhalb von pip installiert werden** — nur wenn du
+`ocr` oder `folien` nutzt: die OCR-Engine **tesseract** samt deutschen
+Sprachdaten (ein C++-Programm, das es nicht als pip-Paket gibt):
 
 ```bash
-pip install -e '.[asr]'    # faster-whisper  → --mit-asr    (Transkription)
-pip install -e '.[folien]' # PySceneDetect   → --mit-folien (Folien aus Video)
-pip install -e '.[ocr]'    # tesseract/poppler → --mit-ocr  (Scan-PDFs)
+brew install tesseract tesseract-lang     # macOS
+# Debian/Ubuntu: sudo apt install tesseract-ocr tesseract-ocr-deu
 ```
+
+Kein poppler, kein ffmpeg nötig — die bringt pip mit. Ohne die Extras
+(`pip install -e .`) läuft die reine PDF-Text-Pipeline ganz ohne System-Werkzeuge.
+
+### Ausführung
+
+```bash
+.venv/bin/lernpaket extrahieren pfad/zum/modul                     # Schritt 1: Material
+.venv/bin/lernpaket generieren pfad/zum/modul --ziel ../lernpakete # Schritt 2: KI
+```
+
+**Schritt 1 — Extrahieren** liest alle Materialien ein (Studienbrief-PDF,
+Vorlesungsvideos per Whisper-Transkription, Scan-Seiten per OCR, Folien) und
+schreibt das Ergebnis nach `<modul>/extraktion/`. Er läuft ohne LLM, nutzt
+automatisch alle installierten Werkzeuge (Abwahl per `--ohne-asr`/`--ohne-ocr`/
+`--ohne-folien`) und cacht Transkripte pro Video — nur der erste Lauf ist teuer.
+Die erste Zeile der Ausgabe zeigt, was aktiv ist: `Werkzeuge: ASR ✓ · OCR ✓ ·
+Folien ✓`.
+
+**Schritt 2 — Generieren** baut daraus das Lernpaket (Themen, Lehrblöcke,
+Quizfragen). Nur hier läuft das LLM — verschiedene Anbieter/Modelle lassen sich
+ausprobieren, ohne neu zu extrahieren. `lernpaket pfad/zum/modul` (ohne
+Unterkommando) führt weiterhin beides in einem Durchlauf aus.
+
+Das Modulverzeichnis braucht die Pflichtquellen (`studienbrief*.pdf`, Videos als
+`*.mp4`/`*.mkv`/…); `altklausuren/` und `uebungen/` sind Optionalquellen.
 
 Die Lehrblöcke und Quizfragen generiert ein LLM (ADR 0002); ohne Anbindung läuft
 ein deterministischer Heuristik-Generator (deutlich geringere Qualität, gleicher
@@ -46,8 +85,8 @@ Umgebung (`LERNPAKET_LLM`, `LERNPAKET_LLM_MODELL`):
 | `ollama`    | lokaler Ollama-Server (`LERNPAKET_OLLAMA_URL`, Default `localhost:11434`) | `llama3.1` |
 
 ```bash
-.venv/bin/lernpaket pfad/zum/modul --llm gemini --llm-modell gemini-2.5-flash
-LERNPAKET_LLM=ollama LERNPAKET_LLM_MODELL=qwen3 .venv/bin/lernpaket pfad/zum/modul
+.venv/bin/lernpaket generieren pfad/zum/modul --llm gemini
+LERNPAKET_LLM=ollama LERNPAKET_LLM_MODELL=qwen3 .venv/bin/lernpaket generieren pfad/zum/modul
 ```
 
 Ohne explizite Wahl werden `anthropic`/`gemini` anhand vorhandener Schlüssel
