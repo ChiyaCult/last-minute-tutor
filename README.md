@@ -96,16 +96,17 @@ Quelle (ADR 0003).
 
 ## Aufbereitung per Docker (Server-Betrieb)
 
-Alle Abhängigkeiten — Python-Pakete inklusive aller Extras sowie die
-Systemwerkzeuge ffmpeg, poppler und tesseract (mit deutschen Sprachdaten) —
-stecken im Image (`pipeline/Dockerfile`); auf dem Server ist nur Docker nötig.
-Materialien und Ergebnis sind Volumes (`./input` → `/input`, `./lernpakete` →
-`/lernpakete`), die Whisper-Modelle (~3 GB) überleben in einem benannten Volume.
+Alle Abhängigkeiten — Python-Pakete inklusive aller Extras sowie die OCR-Engine
+tesseract (mit deutschen Sprachdaten) — stecken im Image (`pipeline/Dockerfile`);
+auf dem Server ist nur Docker nötig. Materialien und Ergebnis sind Volumes
+(`./input` → `/input`, `./lernpakete` → `/lernpakete`), die Whisper-Modelle
+(~3 GB) überleben in einem benannten Volume.
 
 ```bash
 docker compose build
-docker compose run --rm pipeline /input/mein_modul --ziel /lernpakete \
-    --mit-asr --mit-ocr --mit-folien --llm gemini
+docker compose run --rm pipeline extrahieren /input/mein_modul
+docker compose run --rm pipeline generieren /input/mein_modul \
+    --ziel /lernpakete --llm gemini
 ```
 
 LLM-Schlüssel kommen aus der Host-Umgebung oder einer `.env` neben der

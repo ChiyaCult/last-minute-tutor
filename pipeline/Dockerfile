@@ -2,9 +2,10 @@
 # Audio/Video, ASR, Folien) sind im Image — auf dem Server ist nur Docker nötig.
 FROM python:3.12-slim
 
+# Einzige System-Abhängigkeit ist die OCR-Engine tesseract (mit deutschen
+# Sprachdaten). ffmpeg und PDF-Rendering bringen die pip-Wheels (av/opencv,
+# PyMuPDF) selbst mit — kein apt-ffmpeg/poppler nötig.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ffmpeg \
-        poppler-utils \
         tesseract-ocr \
         tesseract-ocr-deu \
     && rm -rf /var/lib/apt/lists/*
