@@ -113,11 +113,16 @@ Quelle (ADR 0003).
 
 ## Aufbereitung per Docker (Server-Betrieb)
 
+Docker ist eine **zusätzliche** Option für den Server-Betrieb — die lokale
+Installation oben (uv bzw. pip) bleibt davon unberührt und ist für die tägliche
+Arbeit weiterhin der einfachste Weg.
+
 Alle Abhängigkeiten — Python-Pakete inklusive aller Extras sowie die OCR-Engine
 tesseract (mit deutschen Sprachdaten) — stecken im Image (`pipeline/Dockerfile`);
-auf dem Server ist nur Docker nötig. Materialien und Ergebnis sind Volumes
-(`./input` → `/input`, `./lernpakete` → `/lernpakete`), die Whisper-Modelle
-(~3 GB) überleben in einem benannten Volume.
+auf dem Server ist nur Docker nötig. Der Build nutzt `uv sync --frozen` mit der
+`uv.lock`, installiert also exakt dieselben Versionen wie lokal. Materialien und
+Ergebnis sind Volumes (`./input` → `/input`, `./lernpakete` → `/lernpakete`), die
+Whisper-Modelle (~3 GB) überleben in einem benannten Volume.
 
 ```bash
 docker compose build
