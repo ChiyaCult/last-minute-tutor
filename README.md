@@ -17,19 +17,69 @@ player/       Node/JS-Player: Diagnosequiz, adaptive Lehrtiefe, Wiederholungspla
 
 ## Aufbereitung (einmalig pro Modul, zwei Schritte)
 
+### Einmalige Installation
+
+Verwaltet mit [uv](https://docs.astral.sh/uv/): ein Befehl legt die venv an,
+installiert alles und pinnt exakte Versionen (`uv.lock`, reproduzierbar).
+
 ```bash
 cd pipeline
-python3 -m venv .venv && .venv/bin/pip install -e '.[dev,asr,ocr]'
-
-.venv/bin/lernpaket extrahieren pfad/zum/modul               # Schritt 1: Material
-.venv/bin/lernpaket generieren pfad/zum/modul --ziel ../lernpakete   # Schritt 2: KI
+uv sync --extra asr --extra ocr --extra folien   # alles inkl. schwerer Werkzeuge
 ```
+
+uv einmal installieren, falls nicht vorhanden: `brew install uv` (macOS) oder
+`curl -LsSf https://astral.sh/uv/install.sh | sh`. Der `uv sync`-Befehl zieht
+**alle** Python-Abhängigkeiten in die venv — inklusive ffmpeg (steckt in den
+Paketen `av`/`opencv`) und dem PDF-Rendering (PyMuPDF). Die Extras kannst du
+weglassen, wenn du das jeweilige Werkzeug nicht brauchst:
+
+| Extra    | Werkzeug                        | wofür                              |
+| -------- | ------------------------------- | ---------------------------------- |
+| `asr`    | faster-whisper                  | Vorlesungsvideos transkribieren    |
+| `ocr`    | pytesseract + PyMuPDF           | Text aus Scan-Seiten lesen         |
+| `folien` | PySceneDetect + OpenCV          | Folien-Standbilder aus Videos      |
+
+**Eine einzige Sache liegt außerhalb von Pythons Reichweite** — nur nötig für
+`ocr`/`folien`: die OCR-Engine **tesseract** samt deutschen Sprachdaten (ein
+C++-Programm, kein pip-Paket, also von keinem Python-Werkzeug installierbar):
+
+```bash
+brew install tesseract tesseract-lang     # macOS
+# Debian/Ubuntu: sudo apt install tesseract-ocr tesseract-ocr-deu
+```
+
+Kein poppler, kein ffmpeg nötig — die bringt uv/pip mit. Ohne die Extras
+(`uv sync`) läuft die reine PDF-Text-Pipeline ganz ohne System-Werkzeuge.
+
+<details><summary>Alternative ohne uv: klassisch mit pip</summary>
+
+```bash
+cd pipeline
+python3 -m venv .venv
+.venv/bin/pip install -e '.[dev,asr,ocr,folien]'
+```
+
+Dasselbe Ergebnis, aber ohne gepinnte Versionen aus `uv.lock`.
+</details>
+
+### Ausführung
+
+Mit uv ohne venv-Aktivierung über `uv run`:
+
+```bash
+uv run lernpaket extrahieren pfad/zum/modul                     # Schritt 1: Material
+uv run lernpaket generieren pfad/zum/modul --ziel ../lernpakete # Schritt 2: KI
+```
+
+(Mit dem pip-Weg stattdessen `.venv/bin/lernpaket …`.)
 
 **Schritt 1 — Extrahieren** liest alle Materialien ein (Studienbrief-PDF,
 Vorlesungsvideos per Whisper-Transkription, Scan-Seiten per OCR, Folien) und
 schreibt das Ergebnis nach `<modul>/extraktion/`. Er läuft ohne LLM, nutzt
 automatisch alle installierten Werkzeuge (Abwahl per `--ohne-asr`/`--ohne-ocr`/
 `--ohne-folien`) und cacht Transkripte pro Video — nur der erste Lauf ist teuer.
+Die erste Zeile der Ausgabe zeigt, was aktiv ist: `Werkzeuge: ASR ✓ · OCR ✓ ·
+Folien ✓`.
 
 **Schritt 2 — Generieren** baut daraus das Lernpaket (Themen, Lehrblöcke,
 Quizfragen). Nur hier läuft das LLM — verschiedene Anbieter/Modelle lassen sich
@@ -37,9 +87,7 @@ ausprobieren, ohne neu zu extrahieren. `lernpaket pfad/zum/modul` (ohne
 Unterkommando) führt weiterhin beides in einem Durchlauf aus.
 
 Das Modulverzeichnis braucht die Pflichtquellen (`studienbrief*.pdf`, Videos als
-`*.mp4`/`*.mkv`/…); `altklausuren/` und `uebungen/` sind Optionalquellen. Die
-schweren Werkzeuge sind pip-Extras (`asr`, `ocr`, `folien`); OCR braucht
-zusätzlich die Systempakete `tesseract` (mit `tesseract-lang`) und `poppler`.
+`*.mp4`/`*.mkv`/…); `altklausuren/` und `uebungen/` sind Optionalquellen.
 
 Die Lehrblöcke und Quizfragen generiert ein LLM (ADR 0002); ohne Anbindung läuft
 ein deterministischer Heuristik-Generator (deutlich geringere Qualität, gleicher
@@ -54,8 +102,8 @@ Umgebung (`LERNPAKET_LLM`, `LERNPAKET_LLM_MODELL`):
 | `ollama`    | lokaler Ollama-Server (`LERNPAKET_OLLAMA_URL`, Default `localhost:11434`) | `llama3.1` |
 
 ```bash
-.venv/bin/lernpaket generieren pfad/zum/modul --llm gemini
-LERNPAKET_LLM=ollama LERNPAKET_LLM_MODELL=qwen3 .venv/bin/lernpaket generieren pfad/zum/modul
+uv run lernpaket generieren pfad/zum/modul --llm gemini
+LERNPAKET_LLM=ollama LERNPAKET_LLM_MODELL=qwen3 uv run lernpaket generieren pfad/zum/modul
 ```
 
 Ohne explizite Wahl werden `anthropic`/`gemini` anhand vorhandener Schlüssel
@@ -81,6 +129,6 @@ der Server-Umgebung und erreichen nie das Frontend.
 ## Tests
 
 ```bash
-cd pipeline && .venv/bin/python -m pytest   # Verträge der Aufbereitung
-cd player && npx vitest run                 # Player-Verhalten an Fixtures
+cd pipeline && uv run pytest   # Verträge der Aufbereitung
+cd player && npx vitest run    # Player-Verhalten an Fixtures
 ```

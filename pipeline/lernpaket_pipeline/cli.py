@@ -59,9 +59,8 @@ def _baue_werkzeuge(mit_asr: bool, mit_ocr: bool, mit_folien: bool) -> dict:
 def _erkenne_werkzeuge(args) -> dict:
     """Auto-Erkennung installierter Werkzeuge (Abwahl per --ohne-*), mit Bericht."""
     asr = not args.ohne_asr and _vorhanden("faster_whisper")
-    ocr = (not args.ohne_ocr and _vorhanden("pytesseract", "pdf2image")
-           and shutil.which("tesseract") is not None
-           and shutil.which("pdftoppm") is not None)
+    ocr = (not args.ohne_ocr and _vorhanden("pytesseract", "fitz", "PIL")
+           and shutil.which("tesseract") is not None)
     folien = (not args.ohne_folien and _vorhanden("scenedetect", "pytesseract", "PIL")
               and shutil.which("tesseract") is not None)
 
@@ -72,7 +71,7 @@ def _erkenne_werkzeuge(args) -> dict:
 
     print("Werkzeuge: "
           f"ASR {status(asr, args.ohne_asr, 'faster-whisper fehlt')} · "
-          f"OCR {status(ocr, args.ohne_ocr, 'tesseract/poppler/Extras fehlen')} · "
+          f"OCR {status(ocr, args.ohne_ocr, 'tesseract/Extras fehlen')} · "
           f"Folien {status(folien, args.ohne_folien, 'scenedetect fehlt')}")
     return _baue_werkzeuge(asr, ocr, folien)
 
