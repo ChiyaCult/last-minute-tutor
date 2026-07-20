@@ -1402,6 +1402,7 @@ dependencies = [
     { name = "pdfminer-six", version = "20251107", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "pdfminer-six", version = "20260107", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
     { name = "pypdf" },
+    { name = "tqdm" },
 ]
 
 [package.optional-dependencies]
@@ -1445,6 +1446,7 @@ requires-dist = [
     { name = "pytesseract", marker = "extra == 'ocr'", specifier = ">=0.3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7" },
     { name = "scenedetect", marker = "extra == 'folien'", specifier = ">=0.6" },
+    { name = "tqdm", specifier = ">=4" },
 ]
 provides-extras = ["dev", "asr", "folien", "ocr", "gpu", "marker"]
 
