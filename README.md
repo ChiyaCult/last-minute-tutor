@@ -139,8 +139,40 @@ Quizfragen). Nur hier läuft das LLM — verschiedene Anbieter/Modelle lassen si
 ausprobieren, ohne neu zu extrahieren. `lernpaket pfad/zum/modul` (ohne
 Unterkommando) führt weiterhin beides in einem Durchlauf aus.
 
-Das Modulverzeichnis braucht die Pflichtquellen (`studienbrief*.pdf`, Videos als
-`*.mp4`/`*.mkv`/…); `altklausuren/` und `uebungen/` sind Optionalquellen.
+### Modulverzeichnis: Struktur & Benennung
+
+Die Quellen werden **per Konvention** über Dateinamen und Unterordner erkannt
+(`finde_quellen`). Ein typisches Modulverzeichnis:
+
+```
+Konzeptionelle_Modellierung/        ← Ordnername wird zu Titel & modul-id
+  studienbrief.pdf                  ← Pflicht (s. u.)
+  vorlesungen/                      ← Videos hier ODER auf oberster Ebene
+    01_ER-Diagramm.mkv
+    02_Relationenmodell.mp4
+  altklausuren/                     ← optional
+    ws2018.pdf
+    ws2019.pdf
+  uebungen/                         ← optional
+    blatt01.pdf
+```
+
+Die Regeln im Detail:
+
+| Quelle | Erkennung | Dateitypen |
+| ------ | --------- | ---------- |
+| **Studienbrief** (Pflicht) | Datei `studienbrief*.pdf` auf oberster Ebene; sonst als Fallback das **größte** übrige PDF oben. Fehlt jedes PDF → Abbruch. | `.pdf` |
+| **Vorlesungen** | Videodateien auf oberster Ebene **oder** im Ordner `vorlesungen/`. Fehlen sie, läuft die Aufbereitung weiter (als Materiallücke vermerkt). | `.mp4` `.mkv` `.webm` `.mov` `.m4v` `.avi` |
+| **Altklausuren** (optional) | PDFs im Ordner `altklausuren/` **oder** oberste-Ebene-PDFs, deren Name mit `altklausur` beginnt. | `.pdf` |
+| **Übungen** (optional) | PDFs im Ordner `uebungen/`/`übungen/` **oder** oberste-Ebene-PDFs, deren Name mit `uebung`/`übung` beginnt. | `.pdf` |
+
+Weitere Annahmen:
+
+- **Groß-/Kleinschreibung** der Unterordner ist egal (`Vorlesungen/`, `ALTKLAUSUREN/` … werden erkannt); die Ordnernamen selbst müssen aber genau `vorlesungen` / `altklausuren` / `uebungen` (bzw. `übungen`) lauten.
+- **Reihenfolge der PDF-Zuordnung:** Ein oberste-Ebene-PDF wird zuerst auf die Präfixe `altklausur…`/`uebung…` geprüft; erst die restlichen PDFs kommen als Studienbrief infrage. Benenne den Studienbrief also **nicht** mit diesen Präfixen.
+- **modul-id & Titel** werden aus dem Ordnernamen abgeleitet (id: kleingeschrieben, Leerzeichen → `-`). Überschreibbar per `--modul-id` / `--titel`.
+- **Scan-PDFs** ohne Textebene werden per OCR gelesen (Extra `ocr`); eingebettete **Diagramme** erfasst die Textextraktion nicht — beides wird als Materiallücke vermerkt.
+- Schritt 1 legt sein Zwischenergebnis unter `<modul>/extraktion/` ab — das Modulverzeichnis muss also **beschreibbar** sein.
 
 Die Lehrblöcke und Quizfragen generiert ein LLM (ADR 0002); ohne Anbindung läuft
 ein deterministischer Heuristik-Generator (deutlich geringere Qualität, gleicher
