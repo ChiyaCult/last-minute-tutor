@@ -29,7 +29,9 @@ services:
       LERNPAKET_OLLAMA_URL: ${LERNPAKET_OLLAMA_URL:-http://ollama:11434}
       LERNPAKET_OLLAMA_MODELL: ${LERNPAKET_OLLAMA_MODELL:-}
     volumes:
-      - ./input:/input:ro
+      # Beschreibbar, weil `extrahieren` sein Zwischenergebnis nach
+      # <modul>/extraktion/ schreibt (wie im lokalen Workflow).
+      - ./input:/input
       - ./lernpakete:/lernpakete
       - whisper-modelle:/modelle
 
