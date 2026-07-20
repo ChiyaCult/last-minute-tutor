@@ -128,9 +128,13 @@ def lies_pdf(pfad: Path, ocr: Optional[Ocr] = None,
     pdfminer.six) nachextrahiert; übernommen wird nur ein besseres Ergebnis.
     Was danach verklebt bleibt, meldet die Pipeline als Materiallücke.
     """
+    from ..fortschritt import balken
+
     pfad = Path(pfad)
     reader = PdfReader(str(pfad))
     seiten: List[Seite] = []
+    # Balken über die Seiten — bei Scan-Seiten (OCR) verweilt er sichtbar länger.
+    bar = balken(total=len(reader.pages), desc=f"PDF {pfad.name}", unit="Seite")
     for i, pdf_seite in enumerate(reader.pages, start=1):
         text = pdf_seite.extract_text() or ""
         if hat_textebene(text):
@@ -138,6 +142,8 @@ def lies_pdf(pfad: Path, ocr: Optional[Ocr] = None,
         else:
             ocr_text = ocr.lese_seite(pfad, i) if ocr is not None else ""
             seiten.append(Seite(nummer=i, text=ocr_text, ist_scan=True))
+        bar.update(1)
+    bar.close()
 
     verklebte = [s.nummer for s in seiten if not s.ist_scan and ist_verklebt(s.text)]
     if verklebte:

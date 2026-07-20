@@ -72,12 +72,20 @@ class FasterWhisperTranskribierer:
                 "Transkription benötigt faster-whisper "
                 "(pip install 'lernpaket-pipeline[asr]')."
             ) from exc
+        from ..fortschritt import balken
+
         modell = self._lade_modell(WhisperModel)
-        segmente, _ = modell.transcribe(str(mp4), language=self.sprache, vad_filter=True)
-        return Transkript(
-            datei=Path(mp4).name,
-            segmente=[TranskriptSegment(start=s.start, ende=s.end, text=s.text) for s in segmente],
-        )
+        segmente, info = modell.transcribe(str(mp4), language=self.sprache, vad_filter=True)
+        gesamt = round(getattr(info, "duration", 0) or 0) or None
+        ergebnis: List[TranskriptSegment] = []
+        # Whisper liefert die Segmente fortlaufend beim Rechnen — der Balken
+        # wächst nach transkribierten Audiosekunden (s.end) bis zur Gesamtdauer.
+        bar = balken(total=gesamt, desc=f"ASR {Path(mp4).name}", unit="s")
+        for s in segmente:
+            ergebnis.append(TranskriptSegment(start=s.start, ende=s.end, text=s.text))
+            bar.update((min(gesamt, round(s.end)) - bar.n) if gesamt else 1)
+        bar.close()
+        return Transkript(datei=Path(mp4).name, segmente=ergebnis)
 
 
 def minuten_position(sekunden: float) -> str:
