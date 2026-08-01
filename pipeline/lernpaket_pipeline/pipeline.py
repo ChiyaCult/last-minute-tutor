@@ -214,10 +214,11 @@ def extrahiere_material(
         materialluecken.append(Materialluecke(
             thema_id="", art="schweigen",
             beschreibung=f"{len(verklebte)} Seite(n) mit verklebtem Text ohne "
-                         f"Leerzeichen (z. B. S. {verklebte[0]}) — auch die "
-                         "Zweitextraktion (pdfminer) konnte die Wortgrenzen nicht "
-                         "rekonstruieren; Inhalte dieser Seiten sind nur "
-                         "eingeschränkt nutzbar.",
+                         f"Leerzeichen (z. B. S. {verklebte[0]}) — weder "
+                         "Zweitextraktion (pdfminer) noch OCR konnten die "
+                         "Wortgrenzen rekonstruieren (meist Diagramm-"
+                         "Beschriftungen); diese Inhalte sind nur eingeschränkt "
+                         "nutzbar.",
         ))
     scan_nummern = {s.nummer for s in seiten if s.ist_scan}
     diagramm_seiten = [n for n in seiten_mit_bildern(quellen.studienbrief)
