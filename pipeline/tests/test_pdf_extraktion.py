@@ -100,3 +100,31 @@ def test_schlechteres_zweitergebnis_wird_verworfen(tmp_path: Path):
     seiten = lies_pdf(pdf, zweitextraktor=fake)
     assert seiten[0].text.splitlines()[0] == VERKLEBTE_ZEILEN[0]
     assert ist_verklebt(seiten[0].text) is True  # Pipeline meldet das als Lücke
+
+
+def test_ocr_rettet_seite_die_pdfminer_nicht_entklebt(tmp_path: Path):
+    """Stufe 2: bleibt eine Seite nach pdfminer verklebt, entklebt OCR sie."""
+    pdf = schreibe_pdf(tmp_path / "verklebt.pdf", [VERKLEBTE_ZEILEN])
+    pdfminer_scheitert = FakeZweitextraktor(text="\n".join(VERKLEBTE_ZEILEN))
+
+    class SauberOcr:
+        def __init__(self):
+            self.aufrufe: List[int] = []
+
+        def lese_seite(self, pdf, seitennummer):
+            self.aufrufe.append(seitennummer)
+            return REPARIERTE_ZEILEN
+
+    ocr = SauberOcr()
+    seiten = lies_pdf(pdf, ocr=ocr, zweitextraktor=pdfminer_scheitert)
+    assert ocr.aufrufe == [1]  # OCR nur für die nach pdfminer noch verklebte Seite
+    assert "werden verschiedene Möglichkeiten" in seiten[0].text
+    assert ist_verklebt(seiten[0].text) is False
+
+
+def test_falsch_positiv_lange_komposita_werden_nicht_als_verklebt_gewertet():
+    """Echte deutsche Komposita/Bindestrich-Namen sind kein Kleben (kein Fehlalarm)."""
+    text = ("Richard Lenz ist Professor an der Friedrich-Alexander-Universität "
+            "Erlangen-Nürnberg und forscht zu IT-Sicherheitsinfrastrukturen und "
+            "einem Patientenverwaltungssystem im Entity-Relationship-Modell.")
+    assert ist_verklebt(text) is False

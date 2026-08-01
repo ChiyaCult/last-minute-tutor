@@ -171,7 +171,8 @@ Weitere Annahmen:
 - **Groß-/Kleinschreibung** der Unterordner ist egal (`Vorlesungen/`, `ALTKLAUSUREN/` … werden erkannt); die Ordnernamen selbst müssen aber genau `vorlesungen` / `altklausuren` / `uebungen` (bzw. `übungen`) lauten.
 - **Reihenfolge der PDF-Zuordnung:** Ein oberste-Ebene-PDF wird zuerst auf die Präfixe `altklausur…`/`uebung…` geprüft; erst die restlichen PDFs kommen als Studienbrief infrage. Benenne den Studienbrief also **nicht** mit diesen Präfixen.
 - **modul-id & Titel** werden aus dem Ordnernamen abgeleitet (id: kleingeschrieben, Leerzeichen → `-`). Überschreibbar per `--modul-id` / `--titel`.
-- **Scan-PDFs** ohne Textebene werden per OCR gelesen (Extra `ocr`); eingebettete **Diagramme** erfasst die Textextraktion nicht — beides wird als Materiallücke vermerkt.
+- **Scan-PDFs** ohne Textebene werden per OCR gelesen (Extra `ocr`). **Verklebter Text** ohne Leerzeichen (bei vielen Studienbriefen die halbe Datei) wird zweistufig repariert: erst über pdfminer (Wortgrenzen aus Glyphen-Abständen), dann für hartnäckige Reste (meist Diagramm-Beschriftungen) per OCR der gerenderten Seite. Was danach noch klebt, wird als Materiallücke vermerkt.
+- **Diagramme** (Struktur/Verbindungen) erfasst die Textextraktion nicht — eingebettete Abbildungen werden als Materiallücke markiert; ihre *Text*-Beschriftungen holt die OCR-Stufe teilweise mit ab.
 - Schritt 1 legt sein Zwischenergebnis unter `<modul>/extraktion/` ab — das Modulverzeichnis muss also **beschreibbar** sein.
 
 Die Lehrblöcke und Quizfragen generiert ein LLM (ADR 0002); ohne Anbindung läuft

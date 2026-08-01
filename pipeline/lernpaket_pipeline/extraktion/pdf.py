@@ -10,6 +10,7 @@ deterministisch testbar).
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Protocol
@@ -70,22 +71,33 @@ def hat_textebene(seite_text: str) -> bool:
     return len(seite_text.strip()) >= MIN_TEXTEBENE_ZEICHEN
 
 
-def _ueberlange_woerter(text: str) -> List[str]:
+# Echtes Kleben zeigt sich an einem Kleinbuchstaben direkt gefolgt von einem
+# Großbuchstaben ("werdenMöglichkeiten", "MiniweltTabelle") — im Deutschen ein
+# verlässliches Wortgrenzen-Signal, weil Nomen großgeschrieben werden. Lange
+# Komposita ("Patientenverwaltungssystem") und Bindestrich-Namen
+# ("Friedrich-Alexander-Universität") haben diesen Übergang NICHT und lösen
+# damit keinen Fehlalarm mehr aus.
+_KLEBE_RE = re.compile(r"[a-zäöüß][A-ZÄÖÜ]")
+
+
+def _verklebte_woerter(text: str) -> List[str]:
+    """Überlange Tokens mit CamelCase-Übergang = tatsächlich zusammengeklebt."""
     return [w for w in text.split()
-            if len(w) > MAX_WORTLAENGE and "://" not in w and "www." not in w]
+            if len(w) > MAX_WORTLAENGE and "://" not in w and "www." not in w
+            and _KLEBE_RE.search(w)]
 
 
 def ist_verklebt(text: str) -> bool:
-    """True, wenn der Textebene die Wortzwischenräume fehlen.
+    """True, wenn dem Text die Wortzwischenräume fehlen (echtes Kleben).
 
-    Erkennungsmerkmal sind gehäufte überlange "Wörter" ("InAbb.1.16werden…").
-    Einzelne lange Tokens (Komposita, Formeln) lösen nicht aus.
+    Zählt nur Tokens mit CamelCase-Übergang (s. `_verklebte_woerter`); einzelne
+    lange Komposita, Bindestrich-Namen, Formeln und URLs lösen nicht aus.
     """
     woerter = text.split()
     if len(woerter) < 5:
         return False
-    ueberlang = _ueberlange_woerter(text)
-    return len(ueberlang) >= 3 or len(ueberlang) / len(woerter) > 0.1
+    geklebt = _verklebte_woerter(text)
+    return len(geklebt) >= 2 or len(geklebt) / len(woerter) > 0.05
 
 
 class Zweitextraktor(Protocol):
@@ -124,9 +136,11 @@ def lies_pdf(pfad: Path, ocr: Optional[Ocr] = None,
 
     Ohne OCR bleibt eine Scan-Seite leer, aber markiert (`ist_scan=True`) —
     die Pipeline meldet das später als Materiallücke statt still zu schlucken.
-    Seiten mit verklebtem Text werden mit dem Zweitextraktor (Default:
-    pdfminer.six) nachextrahiert; übernommen wird nur ein besseres Ergebnis.
-    Was danach verklebt bleibt, meldet die Pipeline als Materiallücke.
+    Verklebte Seiten werden in zwei Stufen repariert: erst der Zweitextraktor
+    (Default pdfminer.six), dann — für hartnäckige Fälle wie Diagramm-
+    Beschriftungen — die OCR (rendert die Seite und liest sie mit visueller
+    Wortgrenze). Übernommen wird jeweils nur ein *weniger* verklebtes Ergebnis;
+    was danach verklebt bleibt, meldet die Pipeline als Materiallücke.
     """
     from ..fortschritt import balken
 
@@ -145,14 +159,24 @@ def lies_pdf(pfad: Path, ocr: Optional[Ocr] = None,
         bar.update(1)
     bar.close()
 
+    def _ersetze_wenn_besser(nummer: int, text: str) -> None:
+        alte = seiten[nummer - 1]
+        if (hat_textebene(text)
+                and len(_verklebte_woerter(text)) < len(_verklebte_woerter(alte.text))):
+            seiten[nummer - 1] = Seite(nummer=nummer, text=text, ist_scan=False)
+
+    # Stufe 1: Zweitextraktor (pdfminer) rekonstruiert die Wortgrenzen aus Glyphen.
     verklebte = [s.nummer for s in seiten if not s.ist_scan and ist_verklebt(s.text)]
     if verklebte:
         ersatz = (zweitextraktor or PdfMinerExtraktor()).lies_seiten(pfad, verklebte)
         for nummer, text in ersatz.items():
-            alte = seiten[nummer - 1]
-            if (hat_textebene(text)
-                    and len(_ueberlange_woerter(text)) < len(_ueberlange_woerter(alte.text))):
-                seiten[nummer - 1] = Seite(nummer=nummer, text=text, ist_scan=False)
+            _ersetze_wenn_besser(nummer, text)
+
+    # Stufe 2: OCR für weiterhin verklebte Seiten (Diagramm-Beschriftungen o. Ä.) —
+    # die visuelle Anordnung liefert Wortgrenzen, die der Textebene fehlen.
+    if ocr is not None:
+        for nummer in [s.nummer for s in seiten if not s.ist_scan and ist_verklebt(s.text)]:
+            _ersetze_wenn_besser(nummer, ocr.lese_seite(pfad, nummer))
     return seiten
 
 
