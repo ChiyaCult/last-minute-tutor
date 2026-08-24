@@ -150,3 +150,17 @@ def test_prosa_bleibt_unberuehrt_ohne_folien_angabe():
         "## **2.5 Elementare Funktionen**\n\nMehr Text.\n"))]
     assert [t.titel for t in baue_themenkatalog(chunks)] == \
            [t.titel for t in baue_themenkatalog(chunks, folien_dokumente=set())]
+
+
+def test_folien_titel_ohne_markdown_auszeichnung():
+    """Der Dokument-Parser setzt Folien-Kopfzeilen als "## Titel".
+
+    Wortlaut aus einem Marker-Lauf über REST_2.1: Ohne Abräumen stand
+    "## Nachricht und Signal" als Thementitel im Player.
+    """
+    chunks = [_folie(1, "D", ["Rechnerstrukturen", "Kapitel 2.1"])]
+    chunks += [_folie(n, "D", ["## Nachricht und Signal", f"Inhalt {n}"])
+               for n in range(2, 20)]
+    titel = [t.titel for t in baue_themenkatalog(chunks, folien_dokumente={"D"})]
+    assert any("Nachricht und Signal" in t for t in titel)
+    assert not any("#" in t for t in titel), titel

@@ -246,11 +246,17 @@ def _folien_rauschen(chunks: List[Chunk]) -> "set[str]":
 
 
 def _folien_kopfzeile(chunk: Chunk, rauschen: "set[str]") -> str:
-    """Erste inhaltstragende Zeile einer Folie — ihre Kopfzeile."""
+    """Erste inhaltstragende Zeile einer Folie — ihre Kopfzeile.
+
+    Die Chunks sind zu diesem Zeitpunkt bereits normalisiert, die Kopfzeile
+    trägt also die Überschriften-Auszeichnung des Dokument-Parsers ("## Nachricht
+    und Signal"). Der Prosa-Pfad wird sie in seiner Überschriften-Regex los;
+    hier muss sie ausdrücklich weg, sonst steht sie im Player im Thementitel.
+    """
     for zeile in (z.strip() for z in chunk.text.split("\n")):
         if len(zeile) < 3 or zeile in rauschen or zeile.rstrip(".").isdigit():
             continue
-        return _bereinige_titel(zeile)
+        return _bereinige_titel(zeile.lstrip("#> ").strip())
     return ""
 
 
