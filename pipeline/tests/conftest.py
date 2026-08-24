@@ -11,8 +11,23 @@ from typing import List
 import pytest
 
 from lernpaket_pipeline.extraktion.audio import Transkript, TranskriptSegment
+from lernpaket_pipeline.extraktion.formeln import HeuristikParser
 
 from .pdf_helfer import schreibe_pdf
+
+
+@pytest.fixture(autouse=True)
+def deterministischer_parser(monkeypatch):
+    """Hält Marker aus der Testsuite heraus.
+
+    Anders als OCR/ASR/Folien (Default `None`, in Tests Fakes) wählt sich der
+    Dokument-Parser selbst: ist das Extra 'marker' installiert, liefen die
+    Tests sonst durch ein mehrere Gigabyte großes ML-Modell — langsam und mit
+    Ergebnissen, die sich von Modellversion zu Modellversion ändern. Tests, die
+    Marker prüfen wollen, injizieren ihn explizit.
+    """
+    monkeypatch.setattr("lernpaket_pipeline.pipeline.waehle_parser",
+                        HeuristikParser)
 
 STUDIENBRIEF_SEITEN: List[List[str]] = [
     [

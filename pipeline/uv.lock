@@ -1401,6 +1401,9 @@ source = { editable = "." }
 dependencies = [
     { name = "pdfminer-six", version = "20251107", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "pdfminer-six", version = "20260107", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
+    { name = "pillow" },
+    { name = "pymupdf", version = "1.26.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
+    { name = "pymupdf", version = "1.28.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
     { name = "pypdf" },
     { name = "tqdm" },
 ]
@@ -1426,9 +1429,6 @@ marker = [
     { name = "marker-pdf", marker = "python_full_version >= '3.10'" },
 ]
 ocr = [
-    { name = "pillow" },
-    { name = "pymupdf", version = "1.26.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "pymupdf", version = "1.28.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
     { name = "pytesseract" },
 ]
 
@@ -1440,8 +1440,8 @@ requires-dist = [
     { name = "nvidia-cudnn-cu12", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=9,<10" },
     { name = "opencv-python", marker = "extra == 'folien'", specifier = ">=4.6" },
     { name = "pdfminer-six", specifier = ">=20231228" },
-    { name = "pillow", marker = "extra == 'ocr'", specifier = ">=10" },
-    { name = "pymupdf", marker = "extra == 'ocr'", specifier = ">=1.24" },
+    { name = "pillow", specifier = ">=10" },
+    { name = "pymupdf", specifier = ">=1.24" },
     { name = "pypdf", specifier = ">=4" },
     { name = "pytesseract", marker = "extra == 'ocr'", specifier = ">=0.3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7" },

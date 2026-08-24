@@ -7,21 +7,26 @@ name = "lernpaket-pipeline"
 version = "0.2.0"
 description = "Aufbereitung: erzeugt pro Modul ein Lernpaket aus den Rohmaterialien"
 requires-python = ">=3.9"
-dependencies = ["pypdf>=4", "pdfminer.six>=20231228", "tqdm>=4"]
+# PyMuPDF/Pillow im Kern: Seiten-Rendering ist Kernfunktion (Diagramm-Erfassung
+# und OCR-Fallback), pure-Wheel ohne System-Abhängigkeit.
+# pymupdf >= 1.24.3: erst ab da heißt das Modul "pymupdf"; der alte Alias "fitz"
+# warnt seit 1.26 beim Import und soll entfallen.
+dependencies = ["pypdf>=4", "pdfminer.six>=20231228", "tqdm>=4",
+                "pymupdf>=1.24.3", "pillow>=10"]
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]
 # Schwere Extraktionswerkzeuge sind bewusst optional (ADR 0004: Werkzeuge austauschbar).
 # Ohne sie laufen die jeweiligen Adapter nicht, die Pipeline degradiert kontrolliert.
-# PyMuPDF rendert die Scan-Seiten pip-only (kein poppler); ffmpeg bringen av/opencv
-# als Bibliothek mit — die OCR-Engine tesseract bleibt die einzige System-Abhängigkeit.
+# PyMuPDF (Rendering) ist im Kern; ffmpeg bringen av/opencv als Bibliothek mit —
+# die OCR-Engine tesseract bleibt die einzige System-Abhängigkeit.
 asr = ["faster-whisper>=1.0"]
 # OpenCV explizit: in scenedetect 0.7 ist es Kern-Dependency (kein [opencv]-Extra
 # mehr), in 0.6 ein Extra — explizit gelistet klappt es versionsunabhängig.
 # Auf macOS ohne Zusatz-Libs; unter Linux/Docker braucht das volle OpenCV libGL
 # (im Dockerfile bereitgestellt).
 folien = ["scenedetect>=0.6", "opencv-python>=4.6"]
-ocr = ["pytesseract>=0.3", "pymupdf>=1.24", "pillow>=10"]
+ocr = ["pytesseract>=0.3"]
 # GPU-ASR: CUDA-12-Libs als pip-Wheels (kein System-CUDA nötig). cuDNN auf 9.x
 # gepinnt — CTranslate2 >= 4.5 (hier 4.8) verlangt cuDNN 9. Nur Linux (keine
 # CUDA-Wheels für macOS); zusätzlich LD_LIBRARY_PATH setzen (siehe README).
@@ -31,7 +36,13 @@ gpu = [
 ]
 # Marker unterstützt erst ab Python 3.10 — Marker-Extra entsprechend markieren,
 # damit die 3.9-Umgebung auflösbar bleibt (Marker ist ein optionales Backend).
-marker = ["marker-pdf>=1.0; python_version >= '3.10'"]
+# ACHTUNG zweite System-Abhängigkeit: marker-pdf 2.x rechnet die Formel- und
+# Texterkennung über surya, das dafür ein llama.cpp-Binary startet
+# (`brew install llama.cpp`, sonst SpawnError). Die übrigen surya-Backends
+# scheiden aus: vllm braucht CUDA, openai_client schickt Seiteninhalte an einen
+# fremden Dienst. Ohne das Binary läuft die Pipeline weiter — sie fällt je Seite
+# auf die Heuristik zurück und meldet es im Log.
+marker = ["marker-pdf>=2.0; python_version >= '3.10'"]
 
 [project.scripts]
 lernpaket = "lernpaket_pipeline.cli:main"

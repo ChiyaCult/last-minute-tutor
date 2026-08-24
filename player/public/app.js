@@ -413,6 +413,15 @@ async function zeigeThema(modulId, themaId) {
       ${lueckenDesThemas.map((l) => `<div class="materialluecke">${escapeHtml(l.beschreibung)}</div>`).join('')}
     </div>
     <div id="bloecke"></div>
+    ${bloecke.abbildungen?.length ? `
+    <div class="karte">
+      <h3>Abbildungen aus dem Studienbrief</h3>
+      ${bloecke.abbildungen.map((a) => `
+        <figure class="abbildung">
+          <img src="${escapeHtml(a.url)}" alt="${escapeHtml(a.titel)}" loading="lazy">
+          <figcaption>${escapeHtml(a.titel)}</figcaption>
+        </figure>`).join('')}
+    </div>` : ''}
     <div class="karte aktionen">
       <button class="primaer" id="ueben">Üben (${FORMAT_NAMEN[modul.zielformat.bestaetigt ?? modul.zielformat.vorschlag]})</button>
       <button id="nachgenerieren">🎓 Mehr Lehrinhalt nachgenerieren</button>

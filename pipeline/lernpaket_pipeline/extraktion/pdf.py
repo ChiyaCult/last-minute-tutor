@@ -53,7 +53,7 @@ class TesseractOcr:
     def lese_seite(self, pdf: Path, seitennummer: int) -> str:
         try:
             import pytesseract  # type: ignore
-            import fitz  # type: ignore  # PyMuPDF
+            import pymupdf  # type: ignore
             from PIL import Image  # type: ignore
         except ImportError as exc:  # pragma: no cover - abhängig von Umgebung
             raise RuntimeError(
@@ -61,7 +61,7 @@ class TesseractOcr:
                 "'lernpaket-pipeline[ocr]') sowie die System-Engine tesseract "
                 "mit deutschen Sprachdaten."
             ) from exc
-        with fitz.open(str(pdf)) as dokument:
+        with pymupdf.open(str(pdf)) as dokument:
             pix = dokument[seitennummer - 1].get_pixmap(dpi=self.dpi)  # 0-basiert
             bild = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
         return pytesseract.image_to_string(bild, lang=self.sprache)
@@ -183,8 +183,9 @@ def lies_pdf(pfad: Path, ocr: Optional[Ocr] = None,
 def seiten_mit_bildern(pfad: Path) -> List[int]:
     """1-basierte Nummern der Seiten mit eingebetteten Bildern (Image-XObjects).
 
-    Zählt ohne Dekodierung (kein Pillow nötig). Grundlage für die Meldung, dass
-    Abbildungen/Diagramme von der Text-Extraktion nicht erfasst werden.
+    Zählt ohne Dekodierung (kein Pillow nötig). Erfasst nur Rasterbilder —
+    Vektor-Diagramme (die häufigere Form in Studienbriefen) siehe
+    `seiten_mit_diagrammen`.
     """
     reader = PdfReader(str(pfad))
     nummern: List[int] = []
@@ -202,6 +203,74 @@ def seiten_mit_bildern(pfad: Path) -> List[int]:
         except Exception:  # defektes Objekt: lieber keine Meldung als Abbruch
             continue
     return nummern
+
+
+# Bildunterschrift am Zeilenanfang ("Abb. 1.1: Titel" / "Abbildung 3.4: …") —
+# ein verlässliches Diagramm-Signal in Studienbriefen. Grenzt sich von Inline-
+# Verweisen ab ("siehe Abb. 1.1", "in Abb. 1.5"), die nicht am Zeilenanfang mit
+# folgendem Doppelpunkt stehen. Die Vektor-Zählung taugt nicht (Dekor-Elemente
+# auf fast jeder Seite), Rasterbilder sind hier selten — die Unterschrift ist
+# das präzise Signal und liefert zugleich einen Titel.
+#
+# Der Dokument-Parser (Marker) setzt vor die Unterschrift Markdown- und HTML-
+# Dekor — mal eine Überschrift ("## Abb. 2.8: …"), mal einen Sprunganker
+# ("<span id=…></span>Abb. 2.9: …"), mal Fettung. Ohne dieses tolerierte Vorspann
+# fände die Erkennung auf normalisierten Seiten gar keine Abbildung mehr.
+_ABB_VORSPANN = r"^[ \t>]*(?:#{1,6}[ \t]*)?(?:<[^>\n]+>[ \t]*)*[*_]{0,2}[ \t]*"
+# Der Lookahead erzwingt die vollständige Nummer: ohne ihn zerfällt der Verweis
+# "Abbildung 2.5 veranschaulicht …" in die Nummer "2", den Trenner "." und den
+# halben Satz als Titel — der Fließtext landete dann als Bildunterschrift.
+_ABB_UNTERSCHRIFT_RE = re.compile(
+    _ABB_VORSPANN
+    + r"((?:Abb\.|Abbildung)\s*\d+(?:[.,]\d+)*(?![.,]?\d))\s*[:.]\s*(\S[^\n]*)?",
+    re.MULTILINE)
+# Dekor am Titelende bzw. Inline-Auszeichnung im Titel wieder abräumen.
+_ABB_TITEL_DEKOR_RE = re.compile(r"<[^>\n]+>|[*_]{1,2}")
+
+
+def finde_abbildungen(seiten: List["Seite"]) -> List["tuple[int, str]"]:
+    """(Seitennummer, Beschriftung) je Seite mit mindestens einer Bildunterschrift.
+
+    Eine Seite erscheint einmal; mehrere Unterschriften werden im Titel
+    zusammengefasst. Die Titel sind durch Zeilenumbruch oft abgeschnitten
+    ("Abb. 1.1: Daten und") — als Label dennoch brauchbar.
+    """
+    ergebnis: List["tuple[int, str]"] = []
+    for seite in seiten:
+        marken = []
+        for m in _ABB_UNTERSCHRIFT_RE.finditer(seite.text):
+            nummer = _ABB_TITEL_DEKOR_RE.sub("", m.group(1)).strip()
+            titel = _ABB_TITEL_DEKOR_RE.sub("", m.group(2) or "").strip()
+            marken.append(f"{nummer}: {titel}".strip().rstrip(":").strip()
+                          if titel else nummer)
+        if marken:
+            ergebnis.append((seite.nummer, " · ".join(dict.fromkeys(marken))))
+    return ergebnis
+
+
+class DiagrammRenderer(Protocol):
+    """Rendert eine PDF-Seite als PNG-Bytes."""
+
+    def rendere(self, pdf: Path, seitennummer: int) -> bytes: ...
+
+
+class PyMuPdfRenderer:
+    """Rendert die volle Seite als PNG (PyMuPDF) — zeigt das Diagramm im Kontext.
+
+    Ganzseiten-Rendering statt Zuschnitt: die Studienbriefe haben einen
+    Vollseiten-Rahmen, an dem sich eine Diagramm-Bounding-Box nicht zuverlässig
+    festmachen lässt; die ganze Seite ist der ehrlichste, robusteste Ausschnitt.
+    """
+
+    def __init__(self, dpi: int = 150):
+        self.dpi = dpi
+
+    def rendere(self, pdf: Path, seitennummer: int) -> bytes:
+        import pymupdf  # type: ignore
+
+        with pymupdf.open(str(pdf)) as dokument:
+            pix = dokument[seitennummer - 1].get_pixmap(dpi=self.dpi)  # 0-basiert
+            return pix.tobytes("png")
 
 
 def ist_scan_pdf(pfad: Path) -> bool:

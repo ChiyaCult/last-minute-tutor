@@ -1,5 +1,7 @@
 """Quellen-Erkennung (Video-Endungen, Groß-/Kleinschreibung, Warn-Materiallücken),
 Boilerplate-Themenfilter und LLM-Anbieter-Auswahl."""
+import unicodedata
+
 import pytest
 
 from datetime import datetime, timezone
@@ -51,6 +53,54 @@ def test_altklausuren_ordner_mit_grossbuchstaben(tmp_path):
 
     quellen = finde_quellen(modul)
     assert [p.name for p in quellen.altklausuren] == ["ws2019.pdf"]
+
+
+def test_kategorie_ordner_studienbrief_wird_erkannt(tmp_path):
+    """Primäres Schema: ein Ordner je Kategorie, Dateinamen beliebig."""
+    modul = tmp_path / "modul"
+    (modul / "studienbrief").mkdir(parents=True)
+    schreibe_pdf(modul / "studienbrief" / "MAT2a_OHNE_Loesungen-1.pdf",
+                 STUDIENBRIEF_SEITEN)
+
+    quellen = finde_quellen(modul)
+    assert [p.name for p in quellen.studienbriefe] == ["MAT2a_OHNE_Loesungen-1.pdf"]
+
+
+def test_mehrere_studienbrief_pdfs_werden_alle_erfasst(tmp_path):
+    modul = tmp_path / "modul"
+    (modul / "studienbrief").mkdir(parents=True)
+    schreibe_pdf(modul / "studienbrief" / "teil_a.pdf", STUDIENBRIEF_SEITEN)
+    schreibe_pdf(modul / "studienbrief" / "teil_b.pdf", STUDIENBRIEF_SEITEN)
+
+    quellen = finde_quellen(modul)
+    assert [p.name for p in quellen.studienbriefe] == ["teil_a.pdf", "teil_b.pdf"]
+
+
+def test_mehrteiliger_studienbrief_belegt_positionen_mit_dateiname(tmp_path):
+    """Ohne Dateinamen zeigten die Belege beider PDFs mehrdeutig auf 'S. 1'."""
+    modul = tmp_path / "modul"
+    (modul / "studienbrief").mkdir(parents=True)
+    schreibe_pdf(modul / "studienbrief" / "teil_a.pdf", STUDIENBRIEF_SEITEN)
+    schreibe_pdf(modul / "studienbrief" / "teil_b.pdf", STUDIENBRIEF_SEITEN)
+
+    ext = extrahiere_material(modul)
+    positionen = {c.position for c in ext.chunks if c.quelle == "studienbrief"}
+    assert any(p.startswith("teil_a, S.") for p in positionen)
+    assert any(p.startswith("teil_b, S.") for p in positionen)
+    assert len({c.id for c in ext.chunks}) == len(ext.chunks)  # IDs bleiben eindeutig
+
+
+def test_uebungsordner_mit_umlaut_in_zerlegter_unicode_form(tmp_path):
+    """macOS legt 'übungen' als NFD ab — ohne Normalisierung fiel der Ordner weg."""
+    modul = tmp_path / "modul"
+    nfd_name = unicodedata.normalize("NFD", "übungen")
+    assert nfd_name != "übungen"  # sonst prueft der Test die Normalisierung nicht
+    (modul / nfd_name).mkdir(parents=True)
+    schreibe_pdf(modul / "studienbrief.pdf", STUDIENBRIEF_SEITEN)
+    schreibe_pdf(modul / nfd_name / "blatt01.pdf", [["Aufgabe 1"]])
+
+    quellen = finde_quellen(modul)
+    assert [p.name for p in quellen.uebungen] == ["blatt01.pdf"]
 
 
 def test_materialluecke_wenn_vorlesungsvideos_fehlen(modul_dir):
@@ -140,18 +190,19 @@ def test_geaenderte_videodatei_umgeht_den_cache(modul_dir_mit_vorlesung,
 
 # --- Diagramm-Verlust --------------------------------------------------------
 
-def test_materialluecke_fuer_seiten_mit_diagrammen(modul_dir, monkeypatch):
+def test_materialluecke_fuer_rasterbild_ohne_unterschrift(modul_dir, monkeypatch):
+    """Rasterbild-Seiten ohne Bildunterschrift werden als unerfasst gemeldet."""
     monkeypatch.setattr("lernpaket_pipeline.pipeline.seiten_mit_bildern",
                         lambda pfad: [2, 3])
     paket = erzeuge_lernpaket(modul_dir)
     passende = [l for l in paket.manifest.materialluecken
-                if "Abbildungen/Diagramme" in l.beschreibung]
+                if "Rasterbild ohne Bildunterschrift" in l.beschreibung]
     assert passende and "S. 2" in passende[0].beschreibung
 
 
-def test_keine_diagramm_luecke_ohne_eingebettete_bilder(modul_dir):
+def test_keine_bild_luecke_ohne_eingebettete_bilder(modul_dir):
     paket = erzeuge_lernpaket(modul_dir)  # Fixture-PDF enthält keine Bilder
-    assert not any("Abbildungen/Diagramme" in l.beschreibung
+    assert not any("Rasterbild" in l.beschreibung
                    for l in paket.manifest.materialluecken)
 
 

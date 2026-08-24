@@ -44,6 +44,10 @@ class FasterWhisperTranskribierer:
     vorhanden. Fehlen dabei die CUDA-Bibliotheken (typischer Ubuntu-Fehler
     „library libcublas.so.12 is not found or cannot be loaded"), wird
     automatisch auf CPU zurückgefallen — die Aufbereitung läuft weiter.
+
+    Der Rechentyp wird, wenn nichts vorgegeben ist, erst beim Laden anhand des
+    tatsächlichen Geräts bestimmt: auf GPU ``auto`` (dort wählt CTranslate2
+    float16), auf CPU ``int8`` — siehe `_standard_compute_type`.
     """
 
     def __init__(self, modell: str = "large-v3", sprache: str = "de",
@@ -51,18 +55,53 @@ class FasterWhisperTranskribierer:
         self.modell = modell
         self.sprache = sprache
         self.device = device or os.environ.get("LERNPAKET_ASR_DEVICE", "auto")
-        self.compute_type = compute_type or os.environ.get("LERNPAKET_ASR_COMPUTE", "auto")
+        # Leerer Wert heißt "beim Laden entscheiden" — das echte Gerät steht
+        # bei device="auto" erst dann fest.
+        self.compute_type = (compute_type
+                             or os.environ.get("LERNPAKET_ASR_COMPUTE") or "")
+        # Einmal geladen, für alle Videos wiederverwendet: sonst kostet jedes
+        # Video erneut das Laden des Modells und eine HuggingFace-Abfrage nach
+        # der aktuellen Revision — bei fehlendem Netz ein Timeout je Video.
+        self._modell = None
+
+    def _nutzt_gpu(self) -> bool:
+        if self.device == "cpu":
+            return False
+        if self.device != "auto":
+            return True
+        try:  # pragma: no cover - hängt an der CUDA-Installation
+            import ctranslate2  # type: ignore  (Abhängigkeit von faster-whisper)
+            return ctranslate2.get_cuda_device_count() > 0
+        except Exception:
+            return False
+
+    def _standard_compute_type(self) -> str:
+        """Rechentyp, wenn keiner vorgegeben ist.
+
+        Auf CPU bewusst ``int8`` statt ``auto``: CTranslate2 quantisiert das
+        Modell bei ``auto`` beim Laden auf die breiteste unterstützte Genauigkeit
+        um. Auf Apple Silicon dauert das bei large-v3 über eine Viertelstunde,
+        ohne dass ein Fehler fällt — der CPU-Rückfall unten greift also nicht,
+        der Lauf kriecht nur. Mit ``int8`` lädt dasselbe Modell in Sekunden.
+        Auf GPU bleibt ``auto`` richtig (CTranslate2 nimmt dort float16).
+        """
+        return "auto" if self._nutzt_gpu() else "int8"
 
     def _lade_modell(self, WhisperModel):
+        if self._modell is not None:
+            return self._modell
+        compute_type = self.compute_type or self._standard_compute_type()
         try:
-            return WhisperModel(self.modell, device=self.device, compute_type=self.compute_type)
+            self._modell = WhisperModel(self.modell, device=self.device,
+                                        compute_type=compute_type)
         except Exception as fehler:  # CUDA-Libs fehlen / GPU nicht nutzbar
             if self.device == "cpu":
                 raise
             log.warning("GPU-Transkription nicht möglich (%s) — falle auf CPU zurück. "
                         "Für GPU die CUDA-12-Pakete installieren (siehe README).",
                         str(fehler).splitlines()[0])
-            return WhisperModel(self.modell, device="cpu", compute_type="int8")
+            self._modell = WhisperModel(self.modell, device="cpu", compute_type="int8")
+        return self._modell
 
     def transkribiere(self, mp4: Path) -> Transkript:  # pragma: no cover - schweres Modell
         try:

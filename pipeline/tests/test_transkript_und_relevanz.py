@@ -25,13 +25,38 @@ class _FakeWhisperModel:
     aufrufe: list = []
 
 
-def test_asr_faellt_bei_fehlendem_cuda_auf_cpu_zurueck():
+def test_asr_faellt_bei_fehlendem_cuda_auf_cpu_zurueck(monkeypatch):
     _FakeWhisperModel.aufrufe = []
     tr = FasterWhisperTranskribierer(device="auto")
+    monkeypatch.setattr(tr, "_nutzt_gpu", lambda: True)  # CUDA-Gerät gemeldet …
     modell = tr._lade_modell(_FakeWhisperModel)
     assert isinstance(modell, _FakeWhisperModel)
-    # Erst der auto-Versuch (scheitert an CUDA), dann der CPU-Fallback.
+    # … die Libs fehlen aber: erst der auto-Versuch, dann der CPU-Fallback.
     assert _FakeWhisperModel.aufrufe == [("auto", "auto"), ("cpu", "int8")]
+
+
+def test_asr_waehlt_auf_cpu_int8_statt_auto():
+    """`auto` quantisiert large-v3 auf CPU minutenlang um — int8 lädt in Sekunden."""
+    _FakeWhisperModel.aufrufe = []
+    tr = FasterWhisperTranskribierer(device="cpu")
+    tr._lade_modell(_FakeWhisperModel)
+    assert _FakeWhisperModel.aufrufe == [("cpu", "int8")]
+
+
+def test_asr_ohne_gpu_bleibt_auto_geraet_aber_int8(monkeypatch):
+    """Ohne CUDA-Gerät löst device=auto auf CPU auf — dann gilt int8."""
+    _FakeWhisperModel.aufrufe = []
+    tr = FasterWhisperTranskribierer(device="auto")
+    monkeypatch.setattr(tr, "_nutzt_gpu", lambda: False)
+    tr._lade_modell(_FakeWhisperModel)
+    assert _FakeWhisperModel.aufrufe[0] == ("auto", "int8")
+
+
+def test_expliziter_compute_type_schlaegt_den_standard():
+    _FakeWhisperModel.aufrufe = []
+    tr = FasterWhisperTranskribierer(device="cpu", compute_type="float32")
+    tr._lade_modell(_FakeWhisperModel)
+    assert _FakeWhisperModel.aufrufe == [("cpu", "float32")]
 
 
 def test_asr_cpu_explizit_ohne_endlos_fallback():
@@ -57,7 +82,9 @@ def test_transkript_chunks_tragen_zeitstempel(fake_transkribierer):
     chunks = chunks_aus_transkript(transkript)
     assert chunks, "Transkript muss Chunks liefern"
     assert chunks[0].quelle == "vorlesung"
-    assert chunks[0].position.startswith("Min. ")
+    # Beleg muss die Vorlesung benennen, nicht nur die Minute: bei einem
+    # Dutzend Vorlesungen wäre "Min. 0:00" allein nicht nachschlagbar.
+    assert chunks[0].position == "vorlesung-01, Min. 0:00"
 
 
 def test_transkript_erzeugt_neue_themen(modul_dir_mit_vorlesung, fake_transkribierer):
@@ -90,3 +117,13 @@ def test_marker_priorisiert_markierte_themen(modul_dir_mit_vorlesung, fake_trans
 def test_ohne_transkribierer_laeuft_pipeline_trotzdem(modul_dir_mit_vorlesung):
     paket = erzeuge_lernpaket(modul_dir_mit_vorlesung)
     assert paket.themen, "Pipeline muss ohne ASR-Adapter durchlaufen"
+
+
+def test_modell_wird_nur_einmal_geladen():
+    """Pro Video neu laden hieße: Ladezeit + HuggingFace-Abfrage je Vorlesung."""
+    _FakeWhisperModel.aufrufe = []
+    tr = FasterWhisperTranskribierer(device="cpu")
+    erstes = tr._lade_modell(_FakeWhisperModel)
+    zweites = tr._lade_modell(_FakeWhisperModel)
+    assert erstes is zweites
+    assert _FakeWhisperModel.aufrufe == [("cpu", "int8")]

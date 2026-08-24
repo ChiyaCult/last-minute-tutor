@@ -100,12 +100,29 @@ class Manifest:
 
 
 @dataclass
+class Abbildung:
+    """Ein gerendertes Diagramm/Standbild aus dem Studienbrief (ADR 0003: mit Beleg).
+
+    `bild` sind die PNG-Bytes (nur zur Laufzeit; als Datei unter `datei`
+    geschrieben, nie ins JSON). `datei` ist der Lernpaket-relative Pfad
+    (`bilder/…png`), `titel` die Bildunterschrift.
+    """
+    id: str
+    thema_id: str
+    datei: str
+    titel: str = ""
+    belege: List[Beleg] = field(default_factory=list)
+    bild: bytes = b""
+
+
+@dataclass
 class Lernpaket:
     manifest: Manifest
     themen: List[Thema] = field(default_factory=list)
     lehrbloecke: List[Lehrblock] = field(default_factory=list)
     fragen: List[Frage] = field(default_factory=list)
     chunks: List[Chunk] = field(default_factory=list)
+    abbildungen: List[Abbildung] = field(default_factory=list)
 
 
 def _dump(obj: object) -> str:
@@ -129,6 +146,15 @@ def schreibe_lernpaket(paket: Lernpaket, ziel: Path) -> Path:
     with (ziel / "chunks.jsonl").open("w", encoding="utf-8") as fh:
         for chunk in paket.chunks:
             fh.write(json.dumps(asdict(chunk), ensure_ascii=False, sort_keys=True) + "\n")
+    if paket.abbildungen:
+        (ziel / "bilder").mkdir(exist_ok=True)
+        for abb in paket.abbildungen:
+            if abb.bild:
+                (ziel / abb.datei).write_bytes(abb.bild)
+        (ziel / "abbildungen.json").write_text(_dump({"abbildungen": [
+            {"id": a.id, "thema_id": a.thema_id, "datei": a.datei, "titel": a.titel,
+             "belege": [asdict(b) for b in a.belege]}
+            for a in paket.abbildungen]}), encoding="utf-8")
     return ziel
 
 
@@ -182,8 +208,18 @@ def lade_lernpaket(pfad: Path) -> Lernpaket:
         for zeile in chunks_datei.read_text(encoding="utf-8").splitlines():
             if zeile.strip():
                 chunks.append(Chunk(**json.loads(zeile)))
+    abbildungen = []
+    abb_datei = pfad / "abbildungen.json"
+    if abb_datei.exists():
+        for a in json.loads(abb_datei.read_text(encoding="utf-8")).get("abbildungen", []):
+            bild_pfad = pfad / a["datei"]
+            abbildungen.append(Abbildung(
+                id=a["id"], thema_id=a.get("thema_id", ""), datei=a["datei"],
+                titel=a.get("titel", ""),
+                belege=[_beleg_von(b) for b in a.get("belege", [])],
+                bild=bild_pfad.read_bytes() if bild_pfad.exists() else b""))
     return Lernpaket(manifest=manifest, themen=themen, lehrbloecke=lehrbloecke,
-                     fragen=fragen, chunks=chunks)
+                     fragen=fragen, chunks=chunks, abbildungen=abbildungen)
 
 
 def pruefe_vertrag(paket: Lernpaket) -> List[str]:
@@ -209,8 +245,13 @@ def pruefe_vertrag(paket: Lernpaket) -> List[str]:
             fehler.append(f"Frage {fr.id}: MC ohne Optionen")
         if fr.belege is None:
             fehler.append(f"Frage {fr.id}: Beleg-Feld fehlt")
+    for abb in paket.abbildungen:
+        if abb.thema_id and abb.thema_id not in themen_ids:
+            fehler.append(f"Abbildung {abb.id}: unbekanntes Thema {abb.thema_id}")
+        if not abb.datei:
+            fehler.append(f"Abbildung {abb.id}: kein Dateipfad")
     for sammlung, art in ((paket.themen, "Thema"), (paket.lehrbloecke, "Lehrblock"),
-                          (paket.fragen, "Frage")):
+                          (paket.fragen, "Frage"), (paket.abbildungen, "Abbildung")):
         for artefakt in sammlung:
             for beleg in artefakt.belege:
                 if beleg.chunk_id and beleg.chunk_id not in chunk_ids:

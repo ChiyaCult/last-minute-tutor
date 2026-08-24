@@ -31,7 +31,7 @@ def test_folienformeln_erscheinen_im_lernpaket(modul_dir_mit_vorlesung):
     folien_chunks = [c for c in paket.chunks if c.quelle == "folie"]
     assert folien_chunks, "Folien muessen als Chunks im Paket liegen"
     assert any("T(n) = 2T(n/2) + n" in c.text for c in folien_chunks)
-    assert all(c.position.startswith("Folie ") for c in folien_chunks)
+    assert all("Folie " in c.position for c in folien_chunks)
     # Die Folienformel ist im Vertiefungs-Lehrblock des passenden Themas nutzbar:
     quicksort_bloecke = [b for b in paket.lehrbloecke
                          if "quicksort" in b.thema_id or "T(n)" in b.inhalt_markdown]

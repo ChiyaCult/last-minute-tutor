@@ -183,9 +183,13 @@ export function erstelleApp({
       const luecken = lueckenFuer(paket);
       const statisch = filtereLehrbloecke(paket.lehrbloecke, m[2], luecken);
       const nachgeneriert = nachgenerierteBloecke(m[1]).filter((b) => b.thema_id === m[2]);
+      const abbildungen = (paket.abbildungen ?? [])
+        .filter((a) => a.thema_id === m[2])
+        .map((a) => ({ titel: a.titel, url: `/bilder/${m[1]}/${a.datei.replace(/^bilder\//, '')}` }));
       return {
         luecke: luecken.has(m[2]),
         lehrbloecke: [...statisch, ...nachgeneriert],
+        abbildungen,
       };
     }],
 
@@ -269,6 +273,12 @@ export function erstelleApp({
     if (url.pathname.startsWith('/vendor/katex/')) {
       sendeDatei(res, join(HIER, '..', 'node_modules', 'katex', 'dist'),
         url.pathname.slice('/vendor/katex/'.length));
+      return;
+    }
+    // Diagramm-Bilder: /bilder/<modul>/<datei> → <lernpakete>/<modul>/bilder/<datei>
+    const bild = url.pathname.match(/^\/bilder\/([\w-]+)\/(.+)$/);
+    if (bild && pakete.has(bild[1])) {
+      sendeDatei(res, join(lernpaketeDir, bild[1], 'bilder'), bild[2]);
       return;
     }
     sendeDatei(res, join(HIER, '..', 'public'),
