@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 from .llm import ANBIETER
-from .pipeline import (erzeuge_und_schreibe, extrahiere_material,
+from .pipeline import (ModulBelegt, erzeuge_und_schreibe, extrahiere_material,
                        generiere_lernpaket, lade_extraktion,
                        schreibe_extraktion)
 from .vertrag import schreibe_lernpaket
@@ -62,10 +62,14 @@ def _baue_werkzeuge(mit_asr: bool, mit_ocr: bool, mit_folien: bool) -> dict:
 def _erkenne_werkzeuge(args) -> dict:
     """Auto-Erkennung installierter Werkzeuge (Abwahl per --ohne-*), mit Bericht."""
     asr = not args.ohne_asr and _vorhanden("faster_whisper")
-    ocr = (not args.ohne_ocr and _vorhanden("pytesseract", "fitz", "PIL")
+    ocr = (not args.ohne_ocr and _vorhanden("pytesseract", "pymupdf", "PIL")
            and shutil.which("tesseract") is not None)
     folien = (not args.ohne_folien and _vorhanden("scenedetect", "pytesseract", "PIL")
               and shutil.which("tesseract") is not None)
+    # Modulname bewusst "pymupdf", nicht der veraltete Alias "fitz": verschwindet
+    # der Alias, meldete diese Prüfung sonst still "fehlt" und die Diagramm-
+    # Erfassung wäre abgeschaltet, obwohl PyMuPDF installiert ist.
+    diagramme = not args.ohne_diagramme and _vorhanden("pymupdf")
 
     def status(an: bool, abgewaehlt: bool, fehlt: str) -> str:
         if abgewaehlt:
@@ -75,8 +79,11 @@ def _erkenne_werkzeuge(args) -> dict:
     print("Werkzeuge: "
           f"ASR {status(asr, args.ohne_asr, 'faster-whisper fehlt')} · "
           f"OCR {status(ocr, args.ohne_ocr, 'tesseract/Extras fehlen')} · "
-          f"Folien {status(folien, args.ohne_folien, 'scenedetect fehlt')}")
-    return _baue_werkzeuge(asr, ocr, folien)
+          f"Folien {status(folien, args.ohne_folien, 'scenedetect fehlt')} · "
+          f"Diagramme {status(diagramme, args.ohne_diagramme, 'PyMuPDF fehlt')}")
+    kwargs = _baue_werkzeuge(asr, ocr, folien)
+    kwargs["mit_diagrammen"] = diagramme
+    return kwargs
 
 
 def _melde_luecken(materialluecken) -> None:
@@ -102,6 +109,8 @@ def _cmd_extrahieren(argv) -> int:
                         help="Scan-Seiten nicht per OCR lesen")
     parser.add_argument("--ohne-folien", action="store_true",
                         help="keine Folien aus den Videos ziehen")
+    parser.add_argument("--ohne-diagramme", action="store_true",
+                        help="keine Diagramm-Seiten als Bild rendern")
     args = parser.parse_args(argv)
 
     extraktion = extrahiere_material(args.modul_dir, **_erkenne_werkzeuge(args))
@@ -183,11 +192,17 @@ def _richte_logging_ein(argv: list) -> list:
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     argv = _richte_logging_ein(argv)
-    if argv and argv[0] == "extrahieren":
-        return _cmd_extrahieren(argv[1:])
-    if argv and argv[0] == "generieren":
-        return _cmd_generieren(argv[1:])
-    return _cmd_komplett(argv)
+    try:
+        if argv and argv[0] == "extrahieren":
+            return _cmd_extrahieren(argv[1:])
+        if argv and argv[0] == "generieren":
+            return _cmd_generieren(argv[1:])
+        return _cmd_komplett(argv)
+    except ModulBelegt as belegt:
+        # Erwarteter Zustand mit klarer Botschaft — ein Traceback wäre hier nur
+        # Lärm, der die eigentliche Anweisung überdeckt.
+        print(f"Abgebrochen: {belegt}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

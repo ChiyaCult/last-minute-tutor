@@ -26,7 +26,10 @@ export function ladeLernpaket(verzeichnis) {
       if (zeile.trim()) chunks.push(JSON.parse(zeile));
     }
   }
-  return { manifest, themen, lehrbloecke, fragen, chunks };
+  // Abbildungen sind optional (nicht jedes Paket hat welche / ältere Pakete keine).
+  const abbPfad = join(verzeichnis, 'abbildungen.json');
+  const abbildungen = existsSync(abbPfad) ? lies(abbPfad).abbildungen : [];
+  return { manifest, themen, lehrbloecke, fragen, chunks, abbildungen };
 }
 
 // Scannt das Lernpakete-Verzeichnis; jedes Unterverzeichnis mit gültigem

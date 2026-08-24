@@ -92,3 +92,7 @@ textarea { width: 100%; }
 .plan-tag { margin-bottom: 0.6rem; }
 .plan-tag .datum { font-weight: 600; font-size: 0.9rem; }
 .aktionen { display: flex; gap: 0.6rem; flex-wrap: wrap; margin-top: 0.8rem; }
+
+.abbildung { margin: 0 0 1rem; }
+.abbildung img { max-width: 100%; height: auto; border: 1px solid var(--rand, #ddd); border-radius: 6px; display: block; }
+.abbildung figcaption { font-size: 0.85rem; color: #666; margin-top: 0.25rem; }

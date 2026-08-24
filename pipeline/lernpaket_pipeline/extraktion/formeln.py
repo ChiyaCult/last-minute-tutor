@@ -8,8 +8,27 @@ Der Player rendert `$...$`/`$$...$$` mit KaTeX.
 """
 from __future__ import annotations
 
+import json
+import logging
+import os
 import re
-from typing import List, Protocol
+import signal
+from pathlib import Path
+from typing import Dict, List, Protocol, runtime_checkable
+
+log = logging.getLogger("lernpaket")
+
+# Surya (unter Marker) legt für jeden lokalen Inferenzserver eine Sentinel-Datei
+# mit PID und Port ab. Das ist der einzige Weg, die Server gezielt wieder
+# loszuwerden — siehe `MarkerParser.schliesse`.
+_DIENST_VERZEICHNIS = Path("~/.cache/datalab/surya").expanduser()
+
+
+def _dienst_sentinels() -> Dict[str, Path]:
+    """Sentinel-Dateien laufender surya-Inferenzserver (Dateiname → Pfad)."""
+    if not _DIENST_VERZEICHNIS.is_dir():
+        return {}
+    return {p.name: p for p in _DIENST_VERZEICHNIS.glob("*_server.json")}
 
 
 class DokumentParser(Protocol):
@@ -18,29 +37,139 @@ class DokumentParser(Protocol):
     def nach_markdown(self, seiten_text: str) -> str: ...
 
 
-class MarkerParser:
-    """Adapter für Marker (extra 'marker'); wandelt ganze PDFs nach Markdown.
+@runtime_checkable
+class SeitenParser(Protocol):
+    """Parser, der ein ganzes PDF liest und Markdown je Seitennummer liefert.
 
-    Bewusst dünn gehalten: Marker arbeitet auf Datei-Ebene, deshalb bietet der
-    Adapter zusätzlich `pdf_nach_markdown`. Die Pipeline nutzt ihn, wenn das
-    Paket installiert ist, sonst die Heuristik unten.
+    Marker arbeitet auf Datei- statt Zeilenebene: Layout, Matrizen und Formeln
+    erschließen sich erst aus der gerenderten Seite, nicht aus dem Rohtext, den
+    `lies_pdf` zieht. Die Pipeline fragt diese Fähigkeit optional ab und fällt
+    je Seite auf `nach_markdown` zurück, wo sie fehlt.
     """
 
-    def pdf_nach_markdown(self, pfad: str) -> str:  # pragma: no cover - schweres Modell
-        try:
-            from marker.converters.pdf import PdfConverter  # type: ignore
-            from marker.models import create_model_dict  # type: ignore
-            from marker.output import text_from_rendered  # type: ignore
-        except ImportError as exc:
-            raise RuntimeError(
-                "Marker ist nicht installiert (pip install 'lernpaket-pipeline[marker]')."
-            ) from exc
-        converter = PdfConverter(artifact_dict=create_model_dict())
-        text, _, _ = text_from_rendered(converter(pfad))
-        return text
+    def pdf_nach_seiten(self, pfad: Path) -> Dict[int, str]: ...
+
+
+# Marker stellt jeder Seite '{<index>}' + 48 Bindestriche voran (paginate_output).
+_SEITENMARKE_RE = re.compile(r"^\{(\d+)\}-{20,}\s*$", re.MULTILINE)
+
+# Leere Sprunganker aus den PDF-Querverweisen — reines Rauschen für LLM und Anzeige.
+_ANKER_RE = re.compile(r'<span\s+id="[^"]*"\s*></span>\s*')
+# Hoch-/Tiefstellung, die Buchstaben umschließt: In den Studienbriefen setzt
+# Marker gewöhnliche Variablen des Fließtexts hoch ("*<sup>f</sup>* ∶ *<sup>D</sup>*"
+# für "f ∶ D") — die Markierung stammt aus der Zeichenposition im PDF und ist
+# unzuverlässig, im selben Satz bleibt das echte Quadrat in "x 2" ungesetzt.
+# Rein numerische Hochstellung bleibt darum stehen (echte Exponenten gehen nicht
+# verloren), buchstabige wird ausgepackt.
+_SUPSUB_BUCHSTABEN_RE = re.compile(r"<(su[pb])>(?=[^<>]*[^\W\d_])([^<>]*)</\1>")
+
+
+def raeume_marker_text_auf(text: str) -> str:
+    """Entfernt Marker-Artefakte, die den Text unlesbar machen."""
+    text = _ANKER_RE.sub("", text)
+    return _SUPSUB_BUCHSTABEN_RE.sub(r"\2", text)
+
+
+def spalte_marker_seiten(markdown: str) -> Dict[int, str]:
+    """Paginiertes Marker-Markdown → {Seitennummer: Text}.
+
+    Markers Seitenindex ist 0-basiert, Seitennummern im Lernpaket sind
+    1-basiert (Beleg-Positionen "S. N") — daher +1.
+    """
+    treffer = list(_SEITENMARKE_RE.finditer(markdown))
+    ergebnis: Dict[int, str] = {}
+    for i, marke in enumerate(treffer):
+        ende = treffer[i + 1].start() if i + 1 < len(treffer) else len(markdown)
+        ergebnis[int(marke.group(1)) + 1] = raeume_marker_text_auf(
+            markdown[marke.end():ende]).strip()
+    return ergebnis
+
+
+class MarkerParser:
+    """Adapter für Marker (extra 'marker'), ADR-0004-Rückgrat der Erfassung.
+
+    Die Modelle werden einmal je Instanz geladen (mehrere Sekunden) und über
+    alle PDFs eines Laufs wiederverwendet.
+    """
+
+    def __init__(self) -> None:
+        self._converter = None
+        self._heuristik = HeuristikParser()
+        self._fremde_dienste: set = set()
+
+    def _converter_holen(self):  # pragma: no cover - schweres Modell
+        if self._converter is None:
+            # Vor dem ersten Start festhalten, welche Inferenzserver bereits
+            # laufen: die gehören einem anderen Prozess, der sie mitten im
+            # Betrieb nicht verlieren darf. `schliesse` fasst sie nicht an.
+            self._fremde_dienste = set(_dienst_sentinels())
+            try:
+                from marker.converters.pdf import PdfConverter  # type: ignore
+                from marker.models import create_model_dict  # type: ignore
+                from marker.config.parser import ConfigParser  # type: ignore
+            except ImportError as exc:
+                raise RuntimeError(
+                    "Marker ist nicht installiert "
+                    "(pip install 'lernpaket-pipeline[marker]')."
+                ) from exc
+            konfiguration = ConfigParser({
+                "paginate_output": True,      # Seitengrenzen für Beleg-Positionen
+                "output_format": "markdown",
+                "disable_image_extraction": True,  # Bilder rendert PyMuPdfRenderer
+            })
+            self._converter = PdfConverter(
+                artifact_dict=create_model_dict(),
+                config=konfiguration.generate_config_dict(),
+                renderer=konfiguration.get_renderer(),
+            )
+        return self._converter
+
+    def pdf_nach_seiten(self, pfad: Path) -> Dict[int, str]:  # pragma: no cover
+        return spalte_marker_seiten(self._converter_holen()(str(pfad)).markdown)
 
     def nach_markdown(self, seiten_text: str) -> str:  # pragma: no cover
-        return seiten_text
+        # Für losen Text (Folien-OCR) kann Marker nichts tun — es braucht die
+        # PDF-Seite. Ohne Delegation bliebe solcher Text gänzlich unnormalisiert.
+        return self._heuristik.nach_markdown(seiten_text)
+
+    def schliesse(self) -> None:
+        """Beendet die Inferenzserver, die dieser Lauf gestartet hat.
+
+        Marker startet bis zu drei lokale Server; der größte (llamacpp, die
+        Formelerkennung) hält rund 2,7 GB. Von allein verschwinden sie zu spät
+        oder gar nicht: den llamacpp-Server räumt surya erst per `atexit` ab,
+        also nach der Transkription, die noch Stunden dauern kann — und
+        `fast_layout`/`ocr_error` sind fest auf keep-alive gesetzt und
+        überleben den Prozess sogar ganz. Nach der PDF-Phase wird keiner von
+        ihnen mehr gebraucht.
+
+        Fremde Server (liefen schon vor dem ersten Marker-Aufruf) bleiben
+        unangetastet — sie können zu einem parallelen Lauf gehören.
+        """
+        for name, pfad in _dienst_sentinels().items():
+            if name in self._fremde_dienste:
+                continue
+            try:
+                daten = json.loads(pfad.read_text(encoding="utf-8"))
+                pid = int(daten["pid"])
+            except (OSError, ValueError, KeyError):
+                continue  # Sentinel unlesbar oder schon weg
+            try:
+                os.kill(pid, signal.SIGTERM)
+                log.info("Inferenzserver beendet: %s (pid %d)",
+                         daten.get("backend", name), pid)
+            except ProcessLookupError:
+                pass  # war schon beendet — Sentinel trotzdem aufräumen
+            except OSError as fehler:  # pragma: no cover - defensiv
+                log.warning("Inferenzserver %s (pid %d) ließ sich nicht "
+                            "beenden: %s", name, pid, fehler)
+                continue
+            try:
+                pfad.unlink()
+            except OSError:  # pragma: no cover - defensiv
+                pass
+        self._converter = None
+        self._fremde_dienste = set()
 
 
 # --- Deterministische Heuristik -------------------------------------------------

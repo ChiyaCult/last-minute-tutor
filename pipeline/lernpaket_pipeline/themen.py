@@ -17,9 +17,14 @@ from .relevanz import STOPPWOERTER, _WORT_RE
 
 ZIEL_MIN, ZIEL_MAX = 15, 40
 
-# Nummerierte Überschriften wie "3 Sortieren", "3.2 Quicksort", "3.2.1 Pivot-Wahl"
+# Nummerierte Überschriften wie "3 Sortieren", "3.2 Quicksort", "3.2.1 Pivot-Wahl".
+# Der Dokument-Parser (Marker) setzt sie zusätzlich in Markdown-Auszeichnung:
+# "## **2.5.1 Polynome**". Ohne die tolerierte Fettung vor der Nummer bliebe die
+# gesamte Kapitelstruktur unsichtbar und der Themenkatalog fiele auf zufällige
+# Fließtext-Fragmente zurück.
 _UEBERSCHRIFT_RE = re.compile(
-    r"^\s*#{0,4}\s*(\d+(?:\.\d+){0,3})\.?\s+([A-ZÄÖÜ][^\n]{2,80})\s*$", re.MULTILINE
+    r"^[ \t]*#{0,4}[ \t]*[*_]{0,2}[ \t]*"
+    r"(\d+(?:\.\d+){0,3})\.?[ \t]+([A-ZÄÖÜ][^\n]{2,80})[ \t]*$", re.MULTILINE
 )
 _KAPITEL_RE = re.compile(
     r"^\s*(?:Kapitel|Lerneinheit|Teil)\s+(\d+)[:.]?\s+([^\n]{3,80})\s*$",
@@ -56,14 +61,19 @@ _ABRISS_STARTWOERTER = frozenset({
 # Punktführer wie "Thema ..... 33" bzw. "Thema . . . . ." (Inhaltsverzeichnis).
 _PUNKTREIHE_RE = re.compile(r"\.{4,}|(?:\.\s+){3,}\.")
 _SEITEN_SUFFIX_RE = re.compile(r"\s+Seite\s+\d+\s*$", re.IGNORECASE)
+# Markdown-Auszeichnung im Titel (Fettung/Kursiv des Dokument-Parsers).
+_MARKDOWN_DEKOR_RE = re.compile(r"[*_]{1,2}")
 # Kapitel-/Abschnittsnummern oberhalb dieser Grenze sind fast immer Artefakte
 # (Postleitzahlen, Jahreszahlen, Seitenzahlen aus dem Inhaltsverzeichnis).
 MAX_KAPITELNUMMER = 50
 
 
 def _bereinige_titel(titel: str) -> str:
-    """Entfernt Seitenangaben und Punktführer-Reste am Titelende."""
+    """Entfernt Seitenangaben, Punktführer-Reste und Markdown-Auszeichnung."""
     titel = _SEITEN_SUFFIX_RE.sub("", titel.strip())
+    # Die schließende Fettung des Dokument-Parsers ("… Polynome**") gehört nicht
+    # in den Themen-Titel; Auszeichnung innerhalb des Titels ebenso wenig.
+    titel = _MARKDOWN_DEKOR_RE.sub("", titel)
     return titel.rstrip(" .").strip()
 
 
@@ -170,12 +180,18 @@ def baue_themenkatalog(studienbrief_chunks: List[Chunk]) -> List[Thema]:
         return _themen_aus_seitenbloecken(studienbrief_chunks)
     gewaehlt = [k for k in kandidaten if k.ebene <= ebene]
     # Nur die tiefste erlaubte Ebene wird zum Thema; flachere sind Kontext.
+    auf_ebene = [k for k in gewaehlt if k.ebene == ebene]
+    # Studienbriefe wiederholen Titel je Kapitel ("2.2 Einführung", "3.2
+    # Einführung", …). Unqualifiziert stünden sie mehrfach gleichlautend im
+    # Katalog und wären für Lernende nicht unterscheidbar; die Kapitelnummer
+    # trennt sie, ohne dass ein Abschnitt aus der Abdeckung fällt.
+    mehrfach = {k.titel for k in auf_ebene
+                if sum(1 for a in auf_ebene if a.titel == k.titel) > 1}
     themen: List[Thema] = []
-    for k in gewaehlt:
-        if k.ebene != ebene:
-            continue
+    for k in auf_ebene:
+        titel = f"{k.nummer} {k.titel}" if k.titel in mehrfach else k.titel
         themen.append(Thema(
-            id=f"t-{len(themen) + 1:02d}", titel=k.titel,
+            id=f"t-{len(themen) + 1:02d}", titel=titel,
             beschreibung=f"Abschnitt {k.nummer} des Studienbriefs",
             belege=[Beleg(quelle="studienbrief", position=k.position, chunk_id=k.chunk_id)],
         ))
