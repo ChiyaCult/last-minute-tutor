@@ -25,7 +25,7 @@ Hinweise darauf, was klausurrelevant ist — verteilt über Altklausuren, Übung
 _Avoid_: Wichtigkeit, Gewichtung
 
 **Pflichtquellen**:
-Die Materialarten, die in jedem Modul garantiert vorliegen: Studienbrief (PDF, ~400 Seiten) und Vorlesungen (MP4). Die Pipeline darf ihr Vorhandensein voraussetzen.
+Die Materialarten, die in jedem Modul garantiert vorliegen: Studienbrief (PDF, ~400 Seiten) und Vorlesungen (MP4). Die Pipeline darf ihr Vorhandensein voraussetzen. Der Studienbrief liegt dabei in einer von zwei **Dokumentarten** vor (ADR 0008): als **Prosa-Studienbrief** (ein dichtes Heft, Gliederung über nummerierte Überschriften) oder als **Foliensatz** (mehrere PowerPoint-Exporte, wenig Text je Seite, Gliederung über Kapitel und Folien-Kopfzeilen). Die Art wird je Datei erkannt; ein Modul darf beides mischen.
 _Avoid_: Hauptmaterial, Kernmaterial
 
 **Optionalquellen**:

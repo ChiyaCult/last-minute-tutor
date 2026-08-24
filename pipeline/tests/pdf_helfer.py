@@ -24,9 +24,13 @@ def _seiten_strom(zeilen: List[str]) -> bytes:
 
 
 def schreibe_pdf(pfad: Path, seiten: List[List[str]],
-                 scan_seiten: List[int] = ()) -> Path:
+                 scan_seiten: List[int] = (),
+                 mediabox: str = "0 0 612 792") -> Path:
     """Schreibt ein PDF. `seiten` = Liste von Zeilen-Listen; Seitennummern in
     `scan_seiten` (1-basiert) erhalten KEINE Textebene (nur ein graues Rechteck).
+
+    `mediabox` setzt das Seitenformat — Default A4-nah hoch; Foliensätze
+    brauchen Querformat ("0 0 720 540").
     """
     objekte: List[bytes] = []
 
@@ -51,7 +55,7 @@ def schreibe_pdf(pfad: Path, seiten: List[List[str]],
     seiten_baum_nr = len(objekte) + len(seiten) + 1  # nach den Page-Objekten
     for inhalt_nr in inhalte_nrn:
         nr = obj(b"<< /Type /Page /Parent " + str(seiten_baum_nr).encode()
-                 + b" 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 "
+                 + b" 0 R /MediaBox [" + mediabox.encode() + b"] /Resources << /Font << /F1 "
                  + str(font_nr).encode() + b" 0 R >> >> /Contents "
                  + str(inhalt_nr).encode() + b" 0 R >>")
         kids.append(f"{nr} 0 R")

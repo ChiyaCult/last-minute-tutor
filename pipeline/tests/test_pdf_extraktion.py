@@ -3,7 +3,8 @@ Verklebt-Erkennung mit Zweitextraktion."""
 from pathlib import Path
 from typing import Dict, List
 
-from lernpaket_pipeline.extraktion.pdf import ist_scan_pdf, ist_verklebt, lies_pdf
+from lernpaket_pipeline.extraktion.pdf import (FOLIEN, PROSA, erkenne_dokumentart,
+                                               ist_scan_pdf, ist_verklebt, lies_pdf)
 
 from .conftest import FakeOcr
 from .pdf_helfer import schreibe_pdf
@@ -128,3 +129,31 @@ def test_falsch_positiv_lange_komposita_werden_nicht_als_verklebt_gewertet():
             "Erlangen-Nürnberg und forscht zu IT-Sicherheitsinfrastrukturen und "
             "einem Patientenverwaltungssystem im Entity-Relationship-Modell.")
     assert ist_verklebt(text) is False
+
+
+def test_dokumentart_erkennt_foliensatz(tmp_path):
+    """Querformat + wenig Text je Seite = Foliensatz (ADR 0008)."""
+    pfad = schreibe_pdf(tmp_path / "folien.pdf",
+                        [["Schaltalgebraische Regeln", "R5a a + 0 = a"]] * 6,
+                        mediabox="0 0 720 540")
+    assert erkenne_dokumentart(pfad, lies_pdf(pfad)) == FOLIEN
+
+
+def test_dokumentart_erkennt_prosa(tmp_path):
+    """Hochformat mit dichtem Fließtext bleibt Prosa — der bisherige Pfad."""
+    zeilen = ["Ein Satz mit reichlich Fliesstext fuer die Zeichenzahl." * 2] * 20
+    pfad = schreibe_pdf(tmp_path / "brief.pdf", [zeilen] * 6)
+    assert erkenne_dokumentart(pfad, lies_pdf(pfad)) == PROSA
+
+
+def test_dokumentart_querformat_allein_reicht_nicht(tmp_path):
+    """Ein quer gesetzter Prosa-Studienbrief ist kein Foliensatz."""
+    zeilen = ["Ein Satz mit reichlich Fliesstext fuer die Zeichenzahl." * 2] * 20
+    pfad = schreibe_pdf(tmp_path / "quer.pdf", [zeilen] * 6, mediabox="0 0 792 612")
+    assert erkenne_dokumentart(pfad, lies_pdf(pfad)) == PROSA
+
+
+def test_dokumentart_wenig_text_allein_reicht_nicht(tmp_path):
+    """Hochformat mit wenig Text (Aufgabenblatt, Deckblatt) bleibt Prosa."""
+    pfad = schreibe_pdf(tmp_path / "duenn.pdf", [["Aufgabe 1", "Berechnen Sie."]] * 6)
+    assert erkenne_dokumentart(pfad, lies_pdf(pfad)) == PROSA

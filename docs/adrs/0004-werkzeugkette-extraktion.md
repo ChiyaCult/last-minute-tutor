@@ -12,6 +12,8 @@ Ein fertiges Dokument-Parser-Pipeline-Tool als Rückgrat, das Textebenen-Auslesu
 
 Ein Erkennungsschritt am Anfang entscheidet Textebene-vorhanden vs. Scan; im Scan-Fall läuft die ganze Seite durch OCR.
 
+**Nachtrag (ADR 0008):** Für Foliensätze ist der Dokument-Parser nicht länger eine von mehreren austauschbaren Optionen, sondern konstitutiv. Folien setzen die Negation als Überstrich, den die PDF-Textebene gar nicht kennt — ohne gerenderte Seite entstehen dort lautlos falsche Formeln. Die Austauschbarkeit der Werkzeuge (Marker/MinerU/Mathpix) bleibt davon unberührt; erforderlich ist *ein* seitenweise arbeitender Parser, nicht speziell Marker.
+
 ## Video (Vorlesung)
 
 - **Audio → Transkript:** Whisper large-v3 (deutschsprachig, MIT), betrieben über faster-whisper/WhisperX (VAD senkt Whispers bekannte Halluzination auf Stille, liefert Wort-Zeitstempel). Voxtral Transcribe 2 als genauere Alternative für die abgedeckten Sprachen.

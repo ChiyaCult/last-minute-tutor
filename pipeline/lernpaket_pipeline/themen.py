@@ -17,6 +17,24 @@ from .relevanz import STOPPWOERTER, _WORT_RE
 
 ZIEL_MIN, ZIEL_MAX = 15, 40
 
+# Beansprucht ein einzelnes Thema mehr als diesen Anteil der Studienbrief-Chunks,
+# war die erkannte Gliederung keine: Die Überschriften-Erkennung hat vereinzelte
+# Textfragmente erwischt, und alles dahinter fällt mangels weiterer Marke einem
+# einzigen Thema zu. Gemessene Werte gesunder Module: Mathe 2a 38,9 %, Mathe 2b
+# 29,5 %, Konzeptionelle Modellierung 56,7 % — REST-Foliensätze dagegen 98 %
+# (8 Schein-Themen aus einer Assembler-Beispielfolie). Die Schwelle liegt
+# bewusst über dem schlechtesten gesunden Modul; sonst verlöre es seine echten
+# Kapiteltitel an die Seitenblöcke.
+MAX_THEMEN_ANTEIL = 0.75
+# Unterhalb dieser Chunk-Zahl sagt der Anteil nichts aus: Trägt ein Dokument
+# kaum mehr Chunks als der Katalog Themen hat, besitzt das größte Thema
+# zwangsläufig einen großen Teil davon — das ist normal und kein Scheitern.
+MIN_CHUNKS_FUER_WAECHTER = 20
+# Zielgröße des Seitenblock-Fallbacks: Mitte des Zielbands. Die Blockgröße
+# richtet sich danach, statt fix zu sein — sonst liefert derselbe Fallback bei
+# 60 Chunks 8 Themen und bei 431 Chunks 54, beides außerhalb des Bands.
+ZIEL_THEMEN_FALLBACK = 30
+
 # Nummerierte Überschriften wie "3 Sortieren", "3.2 Quicksort", "3.2.1 Pivot-Wahl".
 # Der Dokument-Parser (Marker) setzt sie zusätzlich in Markdown-Auszeichnung:
 # "## **2.5.1 Polynome**". Ohne die tolerierte Fettung vor der Nummer bliebe die
@@ -151,8 +169,16 @@ def _waehle_ebene(kandidaten: List[_Kandidat]) -> Optional[int]:
     return beste
 
 
-def _themen_aus_seitenbloecken(chunks: List[Chunk], block_groesse: int = 8) -> List[Thema]:
-    """Fallback ohne erkennbare Struktur: Seitenblöcke als Themen."""
+def _themen_aus_seitenbloecken(chunks: List[Chunk],
+                               block_groesse: Optional[int] = None) -> List[Thema]:
+    """Fallback ohne erkennbare Struktur: Seitenblöcke als Themen.
+
+    Ohne ausdrückliche Blockgröße skaliert sie mit der Stoffmenge, damit die
+    Themenzahl im Zielband landet (Modul-Docstring: Granularität skaliert
+    automatisch).
+    """
+    if block_groesse is None:
+        block_groesse = max(1, -(-len(chunks) // ZIEL_THEMEN_FALLBACK))
     themen: List[Thema] = []
     for i in range(0, len(chunks), block_groesse):
         block = chunks[i:i + block_groesse]
@@ -173,7 +199,178 @@ def _themen_aus_seitenbloecken(chunks: List[Chunk], block_groesse: int = 8) -> L
     return themen
 
 
-def baue_themenkatalog(studienbrief_chunks: List[Chunk]) -> List[Thema]:
+# --- Foliensätze (ADR 0008) -------------------------------------------------
+# Folien tragen keine nummerierten Überschriften. Ihre Gliederung steckt in der
+# Titelfolie (Kapitelnummer) und im Wechsel der Folien-Kopfzeile.
+
+# Zielgröße einer Themengruppe in Folien. Für REST (435 Folien) ergeben sich
+# damit 33 Themen; die naiven Ebenen liefern 16 (Kapitel, zu grob) bzw. 240
+# (jeder Kopfzeilenwechsel, zu fein).
+ZIEL_FOLIEN_JE_THEMA = 15
+# Anteil der Folien, ab dem eine wiederkehrende Zeile als Rauschen gilt
+# (Modulname, Logo, Fußzeile) — sie steht auf fast jeder Folie und ist nie ein
+# Thementitel.
+FOLIEN_RAUSCH_ANTEIL = 0.7
+
+_FOLIEN_KAPITEL_RE = re.compile(r"^\s*Kapitel\s+(\d+(?:\.\d+)?)\s*$", re.MULTILINE)
+_POSITION_RE = re.compile(r"^(.*), S\. (\d+)$")
+
+
+def _dokument_von(chunk: Chunk) -> str:
+    """Dateiname aus der Beleg-Position ("Deck, S. 5" → "Deck")."""
+    treffer = _POSITION_RE.match(chunk.position)
+    return treffer.group(1) if treffer else ""
+
+
+def _folien_rauschen(chunks: List[Chunk]) -> "set[str]":
+    """Zeilen, die auf fast jeder Folie stehen — Logo, Modulname, Fußzeile.
+
+    Häufigkeit allein genügt nicht: Ein Abschnitt, der fast den ganzen
+    Foliensatz füllt, wiederholt seine Kopfzeile genauso oft wie ein Logo.
+    Der Unterschied ist die Position — eine Kopfzeile steht **oben** auf ihrer
+    Folie, Logo und Fußzeile stehen darunter. Ohne diese zweite Bedingung
+    verlöre ein Foliensatz mit nur einem langen Abschnitt seinen Titel und
+    fiele auf die erstbeste Formelzeile zurück.
+    """
+    zaehler: Dict[str, int] = {}
+    oben: Dict[str, int] = {}
+    for chunk in chunks:
+        zeilen = [z.strip() for z in chunk.text.split("\n") if z.strip()]
+        for zeile in set(zeilen):
+            zaehler[zeile] = zaehler.get(zeile, 0) + 1
+        if zeilen:
+            oben[zeilen[0]] = oben.get(zeilen[0], 0) + 1
+    grenze = max(2, int(len(chunks) * FOLIEN_RAUSCH_ANTEIL))
+    return {zeile for zeile, anzahl in zaehler.items()
+            if anzahl >= grenze and oben.get(zeile, 0) < anzahl / 2}
+
+
+def _folien_kopfzeile(chunk: Chunk, rauschen: "set[str]") -> str:
+    """Erste inhaltstragende Zeile einer Folie — ihre Kopfzeile."""
+    for zeile in (z.strip() for z in chunk.text.split("\n")):
+        if len(zeile) < 3 or zeile in rauschen or zeile.rstrip(".").isdigit():
+            continue
+        return _bereinige_titel(zeile)
+    return ""
+
+
+def _themen_aus_foliensatz(chunks: List[Chunk], start: int) -> List[Thema]:
+    """Ein Foliensatz → Themen: Abschnitte bündeln, bis die Zielgröße steht."""
+    if not chunks:
+        return []
+    treffer = _FOLIEN_KAPITEL_RE.search(chunks[0].text)  # steht auf der Titelfolie
+    kapitel = treffer.group(1) if treffer else ""
+    rauschen = _folien_rauschen(chunks)
+
+    # Aufeinanderfolgende Folien mit gleicher Kopfzeile bilden einen Abschnitt.
+    # Die Titelfolie bleibt außen vor: Sie trägt den Namen des Foliensatzes
+    # ("Rechnerstrukturen"), nicht den eines Themas — als Abschnitt würde sie
+    # dem ersten Thema seinen echten Titel wegnehmen.
+    abschnitte: List["tuple[str, List[Chunk]]"] = []
+    letzte_kopfzeile = None
+    for chunk in chunks[1:]:
+        kopfzeile = _folien_kopfzeile(chunk, rauschen)
+        if kopfzeile != letzte_kopfzeile or not abschnitte:
+            abschnitte.append((kopfzeile, []))
+            letzte_kopfzeile = kopfzeile
+        abschnitte[-1][1].append(chunk)
+    if abschnitte:  # Titelfolie gehört inhaltlich zum ersten Thema
+        abschnitte[0][1].insert(0, chunks[0])
+    else:
+        abschnitte = [(_folien_kopfzeile(chunks[0], rauschen), [chunks[0]])]
+
+    themen: List[Thema] = []
+
+    def _thema_aus(kopfzeile: str, gruppe: List[Chunk]) -> None:
+        if not gruppe:
+            return
+        titel = kopfzeile or f"Folien ab {gruppe[0].position}"
+        nummer = start + len(themen) + 1
+        themen.append(Thema(
+            id=f"t-{nummer:02d}",
+            titel=f"{kapitel} {titel}" if kapitel else titel,
+            beschreibung=(f"Foliensatz {_dokument_von(gruppe[0])}, "
+                          f"{len(gruppe)} Folien ab {gruppe[0].position}"),
+            belege=[Beleg(quelle="studienbrief", position=gruppe[0].position,
+                          chunk_id=gruppe[0].id)],
+        ))
+
+    gruppe: List[Chunk] = []
+    gruppen_titel = ""
+    for kopfzeile, abschnitt in abschnitte:
+        if not gruppe:  # der erste Abschnitt einer Gruppe benennt sie
+            gruppen_titel = kopfzeile
+        gruppe.extend(abschnitt)
+        if len(gruppe) >= ZIEL_FOLIEN_JE_THEMA:
+            _thema_aus(gruppen_titel, gruppe)
+            gruppe = []
+    _thema_aus(gruppen_titel, gruppe)
+    return themen
+
+
+def _qualifiziere_doppelte_titel(themen: List[Thema]) -> List[Thema]:
+    """Gleichlautende Titel unterscheidbar machen.
+
+    Foliensätze wiederholen ihre Kopfzeile über lange Strecken ("Digitale
+    Schaltfunktionen" trägt bei REST drei Themengruppen). Im Player steht nur
+    der Titel — ohne Unterscheidung wären sie nicht auseinanderzuhalten.
+    """
+    gesamt: Dict[str, int] = {}
+    for thema in themen:
+        gesamt[thema.titel] = gesamt.get(thema.titel, 0) + 1
+    laufend: Dict[str, int] = {}
+    for thema in themen:
+        if gesamt[thema.titel] > 1:
+            laufend[thema.titel] = laufend.get(thema.titel, 0) + 1
+            thema.titel = f"{thema.titel} (Teil {laufend[thema.titel]})"
+    return themen
+
+
+def _groesster_themenanteil(themen: List[Thema], chunks: List[Chunk]) -> float:
+    """Anteil der Chunks, den das größte Thema sequenziell für sich beansprucht.
+
+    Spiegelt die Zuordnung aus `ordne_chunks_zu`: Ein Thema besitzt alles ab
+    seiner Marke bis zur nächsten, das letzte bis zum Dokumentende.
+    """
+    if not chunks:
+        return 0.0
+    reihenfolge = {c.id: i for i, c in enumerate(chunks)}
+    marken = sorted({reihenfolge[beleg.chunk_id] for thema in themen
+                     for beleg in thema.belege if beleg.chunk_id in reihenfolge})
+    if not marken:
+        return 1.0
+    grenzen = marken + [len(chunks)]
+    groesstes = max(grenzen[i + 1] - grenzen[i] for i in range(len(marken)))
+    return groesstes / len(chunks)
+
+
+def baue_themenkatalog(studienbrief_chunks: List[Chunk],
+                       folien_dokumente: Optional["set[str]"] = None) -> List[Thema]:
+    """Themenkatalog aus den Studienbrief-Chunks.
+
+    `folien_dokumente` nennt die Dateinamen, die als Foliensatz erkannt wurden
+    (ADR 0008); ihre Chunks laufen über die Folien-Gliederung statt über die
+    Überschriften-Erkennung. Leer oder `None` heißt: ausschließlich Prosa —
+    dann läuft exakt der bisherige Pfad.
+    """
+    folien_dokumente = folien_dokumente or set()
+    if folien_dokumente:
+        folien_chunks = [c for c in studienbrief_chunks
+                         if _dokument_von(c) in folien_dokumente]
+        prosa_chunks = [c for c in studienbrief_chunks
+                        if _dokument_von(c) not in folien_dokumente]
+        themen: List[Thema] = []
+        # Je Foliensatz getrennt: die Kapitelnummer steht auf seiner Titelfolie,
+        # und Kopfzeilen dürfen über Dateigrenzen hinweg nicht zusammenlaufen.
+        for dokument in dict.fromkeys(_dokument_von(c) for c in folien_chunks):
+            themen += _themen_aus_foliensatz(
+                [c for c in folien_chunks if _dokument_von(c) == dokument], len(themen))
+        if prosa_chunks:  # gemischtes Modul: Prosa-Teil wie gehabt
+            for thema in baue_themenkatalog(prosa_chunks):
+                thema.id = f"t-{len(themen) + 1:02d}"
+                themen.append(thema)
+        return _qualifiziere_doppelte_titel(themen)
+
     kandidaten = _finde_kandidaten(studienbrief_chunks)
     ebene = _waehle_ebene(kandidaten)
     if ebene is None:
@@ -196,6 +393,10 @@ def baue_themenkatalog(studienbrief_chunks: List[Chunk]) -> List[Thema]:
             belege=[Beleg(quelle="studienbrief", position=k.position, chunk_id=k.chunk_id)],
         ))
     if not themen:
+        return _themen_aus_seitenbloecken(studienbrief_chunks)
+    # Wächter: erkannte "Gliederung", die den Stoff nicht aufteilt, ist keine.
+    if (len(studienbrief_chunks) >= MIN_CHUNKS_FUER_WAECHTER
+            and _groesster_themenanteil(themen, studienbrief_chunks) > MAX_THEMEN_ANTEIL):
         return _themen_aus_seitenbloecken(studienbrief_chunks)
     return themen
 

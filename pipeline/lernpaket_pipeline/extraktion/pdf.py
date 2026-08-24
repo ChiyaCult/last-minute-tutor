@@ -32,6 +32,36 @@ class Seite:
     ist_scan: bool = False
 
 
+# Dokumentarten der Pflichtquelle Studienbrief (ADR 0008).
+PROSA = "prosa"
+FOLIEN = "folien"
+# Median-Zeichen je Seite, unterhalb derer eine Datei als Foliensatz gilt.
+# Gemessen: REST-Foliensätze 308, Prosa-Studienbriefe 1692–2058 — die Schwelle
+# liegt mit Absicht weit von beiden Gruppen entfernt.
+MAX_FOLIEN_ZEICHEN = 800
+
+
+def erkenne_dokumentart(pfad: Path, seiten: List[Seite]) -> str:
+    """Prosa-Studienbrief oder Foliensatz? (ADR 0008)
+
+    Beide Merkmale müssen zusammenkommen: **Querformat** und **wenig Text je
+    Seite**. Einzeln taugt keines — A4-Handouts sind hoch und trotzdem Folien,
+    und ein quer gesetzter Prosa-Studienbrief bliebe Prosa. Ein leeres oder
+    unlesbares PDF gilt als Prosa: Das ist der bisherige Pfad, und eine falsche
+    Foliensatz-Annahme würde die Aufbereitung unnötig hart abbrechen lassen.
+    """
+    if not seiten:
+        return PROSA
+    try:
+        kasten = PdfReader(str(pfad)).pages[0].mediabox
+        quer = float(kasten.width) > float(kasten.height)
+    except Exception:  # pragma: no cover - defektes PDF: konservativ bleiben
+        return PROSA
+    laengen = sorted(len(s.text.strip()) for s in seiten)
+    median = laengen[len(laengen) // 2]
+    return FOLIEN if quer and median < MAX_FOLIEN_ZEICHEN else PROSA
+
+
 class Ocr(Protocol):
     """Volltext-OCR für eine einzelne PDF-Seite ohne Textebene."""
 

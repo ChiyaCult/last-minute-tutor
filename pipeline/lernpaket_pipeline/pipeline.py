@@ -29,9 +29,11 @@ from typing import Dict, List, Optional
 from .chunks import chunks_aus_folien, chunks_aus_seiten, chunks_aus_transkript
 from .extraktion.audio import Transkribierer, Transkript, TranskriptSegment
 from .extraktion.folien import FolienLeser, SzenenErkenner, extrahiere_folien
-from .extraktion.formeln import DokumentParser, SeitenParser, waehle_parser
+from .extraktion.formeln import (DokumentParser, SeitenParser,
+                                 verwaiste_striche, waehle_parser)
 from .fortschritt import balken
-from .extraktion.pdf import (DiagrammRenderer, Ocr, PyMuPdfRenderer, Seite,
+from .extraktion.pdf import (FOLIEN, PROSA, DiagrammRenderer, Ocr,
+                             PyMuPdfRenderer, Seite, erkenne_dokumentart,
                              finde_abbildungen, ist_verklebt, lies_pdf,
                              seiten_mit_bildern)
 from .generierung import Generator, HeuristischerGenerator, LLMGenerator
@@ -166,6 +168,15 @@ class ModulBelegt(RuntimeError):
     """Ein anderer Prozess bereitet dieses Modul gerade auf."""
 
 
+class FoliensatzOhneDokumentParser(RuntimeError):
+    """Foliensatz erkannt, aber kein Dokument-Parser verfügbar (ADR 0008).
+
+    Bewusst ein Abbruch statt der sonst üblichen Degradation: Ein Lernpaket mit
+    lautlos falschen Formeln kostet Lernzeit und schadet in der Klausur — es ist
+    schlechter als gar keines.
+    """
+
+
 @contextmanager
 def modulsperre(modul_dir: Path):
     """Lässt nur einen Aufbereitungslauf je Modul zu.
@@ -260,6 +271,22 @@ def _seiten_markdown_mit_cache(parser: DokumentParser, pdf: Path,
     return je_seite
 
 
+def _folien_titel(seite: Seite) -> str:
+    """Kopfzeile einer Folie als Abbildungs-Beschriftung (ADR 0008).
+
+    Folien haben keine Bildunterschrift; ihre erste Zeile benennt die Folie und
+    ist im Player das einzige Label, das die Abbildung unterscheidbar macht.
+    Die Seiten sind hier bereits normalisiert, tragen also Markdown-Auszeichnung
+    des Dokument-Parsers ("### Regeln für ein Element:") — die gehört nicht ins
+    Label.
+    """
+    for zeile in (z.strip() for z in seite.text.split("\n")):
+        zeile = zeile.lstrip("#*_ ").rstrip("*_ ")
+        if len(zeile) >= 3 and not zeile.rstrip(".").isdigit():
+            return zeile[:80]
+    return f"Folie {seite.nummer}"
+
+
 def _normalisiere_seiten(seiten: List[Seite], parser: DokumentParser,
                          pdf: Optional[Path] = None,
                          cache_dir: Optional[Path] = None) -> List[Seite]:
@@ -319,6 +346,7 @@ def extrahiere_material(
     jetzt: Optional[datetime] = None,
     diagramm_renderer: Optional[DiagrammRenderer] = None,
     mit_diagrammen: bool = True,
+    dokumentart: Optional[str] = None,
 ) -> Extraktion:
     """Schritt 1: Materialien → Chunks + Materiallücken. Läuft ohne LLM.
 
@@ -334,7 +362,7 @@ def extrahiere_material(
             modul_dir, ocr=ocr, transkribierer=transkribierer,
             szenen_erkenner=szenen_erkenner, folien_leser=folien_leser,
             parser=parser, jetzt=jetzt, diagramm_renderer=diagramm_renderer,
-            mit_diagrammen=mit_diagrammen)
+            mit_diagrammen=mit_diagrammen, dokumentart=dokumentart)
 
 
 def _extrahiere_material(
@@ -347,6 +375,7 @@ def _extrahiere_material(
     jetzt: Optional[datetime] = None,
     diagramm_renderer: Optional[DiagrammRenderer] = None,
     mit_diagrammen: bool = True,
+    dokumentart: Optional[str] = None,
 ) -> Extraktion:
     """Der eigentliche Extraktionslauf, innerhalb der Modulsperre."""
     quellen = finde_quellen(modul_dir)
@@ -381,6 +410,7 @@ def _extrahiere_material(
     # eindeutig bleiben.
     chunks: List[Chunk] = []
     abbildungen: List[Abbildung] = []
+    dokumentarten: Dict[str, str] = {}
     mehrteilig = len(quellen.studienbriefe) > 1
     for index, studienbrief in enumerate(quellen.studienbriefe, start=1):
         label = studienbrief.stem if mehrteilig else ""
@@ -392,6 +422,21 @@ def _extrahiere_material(
                  " (mit OCR)" if ocr is not None else "")
         seiten = lies_pdf(studienbrief, ocr=ocr)
         log.info("Studienbrief %s: %d Seite(n) gelesen", studienbrief.name, len(seiten))
+
+        # Dokumentart bestimmen (ADR 0008) — sie steuert Themenableitung und
+        # Abbildungserfassung und landet zur Nachprüfbarkeit im Manifest.
+        art = dokumentart or erkenne_dokumentart(studienbrief, seiten)
+        dokumentarten[studienbrief.name] = art
+        log.info("Dokumentart %s: %s", studienbrief.name, art)
+        if art == FOLIEN and not isinstance(parser, SeitenParser):
+            raise FoliensatzOhneDokumentParser(
+                f"{studienbrief.name} ist ein Foliensatz, aber es steht kein "
+                "Dokument-Parser bereit (Extra 'marker'). Folien setzen die "
+                "Negation als Überstrich, den die PDF-Textebene nicht kennt — "
+                "ohne Parser wären die Formeln im Lernpaket nicht bloß dünn, "
+                "sondern lautlos falsch (ADR 0008). Abhilfe: "
+                "pip install 'lernpaket-pipeline[marker]' — oder, wenn die "
+                "Erkennung danebenliegt, --dokumentart prosa.")
         scans_ohne_text = [s.nummer for s in seiten if s.ist_scan and not s.text.strip()]
         if scans_ohne_text:
             if ocr is None:
@@ -419,10 +464,12 @@ def _extrahiere_material(
             ))
         # Diagramme werden als Bilder erfasst (s. u.); nur Rasterbild-Seiten ohne
         # Bildunterschrift bleiben unerfasst und werden als Materiallücke vermerkt.
+        # Bei Foliensätzen entfällt das: dort wird ohnehin jede Folie gerendert.
         beschriftete = {n for n, _ in finde_abbildungen(seiten)}
         scan_nummern = {s.nummer for s in seiten if s.ist_scan}
-        ungefasste_bilder = [n for n in seiten_mit_bildern(studienbrief)
-                             if n not in scan_nummern and n not in beschriftete]
+        ungefasste_bilder = [] if art == FOLIEN else [
+            n for n in seiten_mit_bildern(studienbrief)
+            if n not in scan_nummern and n not in beschriftete]
         if ungefasste_bilder:
             materialluecken.append(Materialluecke(
                 thema_id="", art="schweigen",
@@ -433,12 +480,34 @@ def _extrahiere_material(
         seiten = _normalisiere_seiten(
             seiten, parser, pdf=studienbrief,
             cache_dir=modul_dir / EXTRAKTIONS_ORDNER / "dokumente")
+
+        # Überstriche, die der Parser nicht an ihren Operanden binden konnte:
+        # in Foliensätzen die Negation. Gemeldet statt still falsch gerechnet.
+        striche = [(s.nummer, verwaiste_striche(s.text)) for s in seiten]
+        betroffen = [(n, anzahl) for n, anzahl in striche if anzahl]
+        if betroffen:
+            materialluecken.append(Materialluecke(
+                thema_id="", art="widerspruch",
+                beschreibung=(
+                    f"{sum(a for _, a in betroffen)} verwaiste(r) Überstrich(e) auf "
+                    f"{len(betroffen)} Seite(n) (z. B. {_pos(betroffen[0][0])}) — "
+                    "ein Negationsstrich ließ sich seinem Operanden nicht zuordnen. "
+                    "Die betroffenen Formeln können ohne Negation dastehen und "
+                    "damit das Gegenteil behaupten; im Original nachsehen.")))
         sb_chunks = chunks_aus_seiten(seiten, start_zaehler=len(chunks), dokument=label)
         chunks.extend(sb_chunks)
 
         # Diagramme: beschriftete Seiten (Bildunterschrift) als PNG rendern und mit
         # Beleg auf den Seiten-Chunk versehen (Thema-Zuordnung im Generierungsschritt).
-        abbildung_seiten = finde_abbildungen(seiten) if mit_diagrammen else []
+        # Foliensätze tragen keine Bildunterschriften — ihre Diagramme (KV-Dia-
+        # gramme, Schaltnetze, Automatengraphen) wären sonst unsichtbar, obwohl
+        # sie den Kern der Folie ausmachen. Dort ist jede Folie eine Abbildung.
+        if not mit_diagrammen:
+            abbildung_seiten = []
+        elif art == FOLIEN:
+            abbildung_seiten = [(s.nummer, _folien_titel(s)) for s in seiten]
+        else:
+            abbildung_seiten = finde_abbildungen(seiten)
         if not abbildung_seiten:
             continue
         renderer = diagramm_renderer or PyMuPdfRenderer()
@@ -521,7 +590,9 @@ def _extrahiere_material(
 
     return Extraktion(
         quellen=(
-            [Quelle(art="studienbrief", datei=p.name) for p in quellen.studienbriefe]
+            [Quelle(art="studienbrief", datei=p.name,
+                    dokumentart=dokumentarten.get(p.name, PROSA))
+             for p in quellen.studienbriefe]
             + [Quelle(art="vorlesung", datei=p.name) for p in quellen.vorlesungen]
             + [Quelle(art="altklausur", datei=p.name) for p in quellen.altklausuren]
             + [Quelle(art="uebung", datei=p.name) for p in quellen.uebungen]),
@@ -586,6 +657,20 @@ def lade_extraktion(modul_dir: Path) -> Extraktion:
     )
 
 
+def _folien_dokumente(extraktion: Extraktion) -> "set[str]":
+    """Dokument-Kennungen der Foliensätze, wie sie in den Chunk-Positionen stehen.
+
+    `chunks_aus_seiten` stellt der Position nur bei mehreren Studienbrief-PDFs
+    den Dateinamen voran; bei einer einzigen Datei lautet die Kennung "". Diese
+    Umrechnung muss hier stimmen, sonst findet der Themenkatalog die Folien
+    nicht wieder.
+    """
+    briefe = [q for q in extraktion.quellen if q.art == "studienbrief"]
+    mehrteilig = len(briefe) > 1
+    return {Path(q.datei).stem if mehrteilig else ""
+            for q in briefe if q.dokumentart == FOLIEN}
+
+
 def generiere_lernpaket(
     extraktion: Extraktion,
     modul_id: str,
@@ -604,7 +689,15 @@ def generiere_lernpaket(
     materialluecken = list(extraktion.materialluecken)
 
     # Themenkatalog: Studienbrief-Struktur + Vorlesungsinhalte, dann gewichten.
-    themen = baue_themenkatalog([c for c in chunks if c.quelle == "studienbrief"])
+    # Foliensätze gliedern sich anders als Prosa (ADR 0008); welche Datei welche
+    # Art hat, steht im Extraktionsergebnis und überlebt so den Schrittwechsel.
+    folien_dokumente = _folien_dokumente(extraktion)
+    if folien_dokumente:
+        log.info("Foliensätze im Studienbrief: %d von %d Datei(en)",
+                 len(folien_dokumente),
+                 sum(1 for q in extraktion.quellen if q.art == "studienbrief"))
+    themen = baue_themenkatalog([c for c in chunks if c.quelle == "studienbrief"],
+                                folien_dokumente=folien_dokumente)
     themen = ergaenze_aus_transkript(
         themen, [c for c in chunks if c.quelle in ("vorlesung", "folie")])
     treffer = finde_relevanz_marker(chunks)

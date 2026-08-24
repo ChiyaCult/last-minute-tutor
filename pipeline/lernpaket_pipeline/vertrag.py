@@ -84,6 +84,9 @@ class Zielformat:
 class Quelle:
     art: str  # studienbrief | vorlesung | altklausur | uebung
     datei: str
+    # Nur bei art="studienbrief" aussagekräftig (ADR 0008): "prosa" | "folien".
+    # Default hält ältere extraktion.json-Dateien ladbar.
+    dokumentart: str = "prosa"
 
 
 @dataclass

@@ -75,6 +75,17 @@ auf eine deterministische Heuristik zurück, die Formelzeilen als LaTeX markiert
 zur Laufzeit scheitert (z. B. fehlendes `llama-server`-Binary); der Rückfall
 steht dann im Log.
 
+Bei **Foliensätzen** ist Marker keine Kür, sondern Bedingung: Folien setzen die
+Negation als Überstrich, den die PDF-Textebene überhaupt nicht kennt. Aus
+`(a ∙ b) = a + b` (De Morgan) wird ohne Parser eine mathematisch falsche
+Aussage — unauffällig falsch, also gefährlich. Deshalb bricht die Aufbereitung
+für erkannte Foliensätze ohne Parser ab, statt zu degradieren.
+
+Auch mit Marker bleibt ein Rest: In locker gesetzten Regeltabellen verliert er
+einzelne Überstriche (gemessen an `REST_4.2_Bool_Algebra`: 21 korrekt, 8
+verloren). Solche Reste sind am verwaisten `\_` erkennbar und landen als
+**Materiallücke** im Paket — nachsehen lohnt dort im Original.
+
 ### ASR auf GPU (NVIDIA)
 
 GPU-Transkription ist deutlich schneller (die Qualität bleibt identisch — es ist
@@ -295,6 +306,14 @@ Weitere Annahmen:
 - **Reihenfolge der PDF-Zuordnung:** Ein oberste-Ebene-PDF wird zuerst auf die Präfixe `altklausur…`/`uebung…` geprüft; erst die restlichen PDFs kommen als Studienbrief infrage. Benenne den Studienbrief also **nicht** mit diesen Präfixen. Mit `studienbrief/`-Ordner entfällt diese Stolperfalle.
 - **modul-id & Titel** werden aus dem Ordnernamen abgeleitet (id: kleingeschrieben, Leerzeichen → `-`). Überschreibbar per `--modul-id` / `--titel`.
 - **Scan-PDFs** ohne Textebene werden per OCR gelesen (Extra `ocr`). **Verklebter Text** ohne Leerzeichen (bei vielen Studienbriefen die halbe Datei) wird zweistufig repariert: erst über pdfminer (Wortgrenzen aus Glyphen-Abständen), dann für hartnäckige Reste (meist Diagramm-Beschriftungen) per OCR der gerenderten Seite. Was danach noch klebt, wird als Materiallücke vermerkt.
+- **Dokumentart des Studienbriefs** wird je PDF erkannt (ADR 0008): **Prosa** (dichtes
+  Heft, Gliederung über nummerierte Überschriften) oder **Foliensatz** (Querformat und
+  wenig Text je Seite — Gliederung über Kapitel der Titelfolie und Folien-Kopfzeilen,
+  jede Folie wird als Abbildung gerendert). Ein Modul darf beides mischen. Die erkannte
+  Art steht im Manifest (`quellen[].dokumentart`) und lässt sich mit
+  `--dokumentart prosa|folien` erzwingen. **Foliensätze brauchen zwingend das Extra
+  `marker`** — ohne es bricht die Aufbereitung ab, statt Formeln lautlos falsch zu
+  übernehmen (s. u.).
 - **Diagramme** (Struktur/Verbindungen) erfasst die Textextraktion nicht — eingebettete Abbildungen werden als Materiallücke markiert; ihre *Text*-Beschriftungen holt die OCR-Stufe teilweise mit ab.
 - Schritt 1 legt sein Zwischenergebnis unter `<modul>/extraktion/` ab — das Modulverzeichnis muss also **beschreibbar** sein.
 

@@ -64,6 +64,19 @@ _ANKER_RE = re.compile(r'<span\s+id="[^"]*"\s*></span>\s*')
 _SUPSUB_BUCHSTABEN_RE = re.compile(r"<(su[pb])>(?=[^<>]*[^\W\d_])([^<>]*)</\1>")
 
 
+# Ein Überstrich, den der Dokument-Parser nicht an seinen Operanden binden
+# konnte: Er bleibt als alleinstehender (escapter) Unterstrich stehen. In
+# Foliensätzen ist das die Negation — "R8a a + a = 1 \_" statt "a + ā = 1".
+# Der Fehler ist damit erkennbar und wird als Materiallücke gemeldet, statt
+# lautlos als falsche Formel weiterzulaufen (ADR 0003, ADR 0008).
+_VERWAISTER_STRICH_RE = re.compile(r"(?<![\\\w])\\_(?![\w])|(?<!\S)_+(?!\S)")
+
+
+def verwaiste_striche(text: str) -> int:
+    """Anzahl der Überstriche ohne Operand — verlorene Negationen."""
+    return len(_VERWAISTER_STRICH_RE.findall(text))
+
+
 def raeume_marker_text_auf(text: str) -> str:
     """Entfernt Marker-Artefakte, die den Text unlesbar machen."""
     text = _ANKER_RE.sub("", text)

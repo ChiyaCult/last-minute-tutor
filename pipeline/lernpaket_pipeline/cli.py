@@ -111,9 +111,13 @@ def _cmd_extrahieren(argv) -> int:
                         help="keine Folien aus den Videos ziehen")
     parser.add_argument("--ohne-diagramme", action="store_true",
                         help="keine Diagramm-Seiten als Bild rendern")
+    parser.add_argument("--dokumentart", choices=("prosa", "folien"), default=None,
+                        help="Dokumentart der Studienbrief-PDFs erzwingen "
+                             "(sonst automatisch erkannt, ADR 0008)")
     args = parser.parse_args(argv)
 
-    extraktion = extrahiere_material(args.modul_dir, **_erkenne_werkzeuge(args))
+    extraktion = extrahiere_material(args.modul_dir, dokumentart=args.dokumentart,
+                                     **_erkenne_werkzeuge(args))
     ziel = schreibe_extraktion(extraktion, args.modul_dir)
     print(f"Extraktion geschrieben: {ziel} ({len(extraktion.chunks)} Chunks)")
     _melde_luecken(extraktion.materialluecken)
