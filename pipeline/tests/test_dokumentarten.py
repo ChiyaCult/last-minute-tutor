@@ -91,3 +91,62 @@ def test_verwaiste_striche_werden_gezaehlt():
     assert verwaiste_striche("R7a a + a = a\n____ _ _\n") == 3
     # Echtes LaTeX mit Indizes und gebundenem Überstrich schlägt nicht an.
     assert verwaiste_striche(r"$x_r = a_{r,1}\overline{y} + z\_index$") == 0
+
+
+class FakeBenennerLLM:
+    """LLM, das Titel vorschlägt — einer davon unbrauchbar."""
+
+    def __init__(self, antwort):
+        self.antwort = antwort
+        self.aufrufe = 0
+
+    def frage(self, system, prompt, max_tokens=4096):
+        self.aufrufe += 1
+        self.letzter_prompt = prompt
+        return self.antwort
+
+
+def _themen_und_zuordnung():
+    from lernpaket_pipeline.vertrag import Chunk, Thema
+    themen = [Thema(id="t-01", titel="| $k$ | $PI$ |"),
+              Thema(id="t-02", titel="8. Schritt:"),
+              Thema(id="t-03", titel="Flipflop-Schaltungen")]
+    zuordnung = {t.id: [Chunk(id=f"c-{i}", quelle="studienbrief",
+                              position=f"D, S. {i}", text="Inhalt " * 30)]
+                 for i, t in enumerate(themen)}
+    return themen, zuordnung
+
+
+def test_llm_benennt_themen_in_einem_aufruf():
+    from lernpaket_pipeline.themen import benenne_themen
+    themen, zuordnung = _themen_und_zuordnung()
+    llm = FakeBenennerLLM('{"t-01": "Primimplikanten-Tabelle", '
+                          '"t-02": "Quine-McCluskey-Verfahren", '
+                          '"t-03": "Flipflop-Schaltungen"}')
+    titel = [t.titel for t in benenne_themen(themen, zuordnung, llm)]
+    assert llm.aufrufe == 1, "gebündelt, nicht je Thema"
+    assert titel == ["Primimplikanten-Tabelle", "Quine-McCluskey-Verfahren",
+                     "Flipflop-Schaltungen"]
+    # Der Prompt muss Material je Thema mitgeben, sonst rät das Modell.
+    assert "t-01" in llm.letzter_prompt and "Inhalt" in llm.letzter_prompt
+
+
+def test_llm_vorschlag_wird_am_selben_massstab_geprueft():
+    """Ein Vorschlag mit Formel-/Tabellenresten ist keine Verbesserung."""
+    from lernpaket_pipeline.themen import benenne_themen
+    themen, zuordnung = _themen_und_zuordnung()
+    llm = FakeBenennerLLM('{"t-01": "| $x$ |", "t-02": "$$y = 1$$", '
+                          '"t-03": "Flipflop-Schaltungen"}')
+    titel = [t.titel for t in benenne_themen(themen, zuordnung, llm)]
+    assert titel[0] == "| $k$ | $PI$ |", "unbrauchbarer Vorschlag wird verworfen"
+    assert titel[1] == "8. Schritt:"
+
+
+def test_benennung_ueberlebt_kaputte_llm_antwort():
+    """Die Benennung ist eine Verbesserung, kein Muss — sie darf nie den Lauf kippen."""
+    from lernpaket_pipeline.themen import benenne_themen
+    themen, zuordnung = _themen_und_zuordnung()
+    vorher = [t.titel for t in themen]
+    for antwort in ("kein JSON hier", "[1, 2, 3]", ""):
+        assert [t.titel for t in benenne_themen(themen, zuordnung,
+                                                FakeBenennerLLM(antwort))] == vorher

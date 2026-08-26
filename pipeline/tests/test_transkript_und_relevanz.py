@@ -127,3 +127,31 @@ def test_modell_wird_nur_einmal_geladen():
     zweites = tr._lade_modell(_FakeWhisperModel)
     assert erstes is zweites
     assert _FakeWhisperModel.aufrufe == [("cpu", "int8")]
+
+
+def test_redefuellsel_wird_nicht_zum_thema():
+    """Häufigste Transkriptwörter sind Füllsel, keine Themen.
+
+    Wortlaut aus dem REST-Lauf: "Bedeutet" (339x), "Nämlich" (167x) und
+    "Punkte" (257x) standen als Themen im Katalog. Erste zwei sind Verben bzw.
+    Adverbien (mitten im Satz klein), "Punkte" ist ein Nomen, zieht sich aber
+    durch die ganze Vorlesung statt zu einem Thema zu gehören.
+    """
+    from lernpaket_pipeline.themen import ergaenze_aus_transkript
+    from lernpaket_pipeline.vertrag import Chunk, Thema
+    chunks = []
+    for i in range(50):
+        # Füllsel in jedem Chunk, Fachbegriff nur in zweien — dreimal genannt
+        # (min_nennungen), aber mit geringer Streuung.
+        text = "Das bedeutet hier etwas und nämlich auch Punkte dazu."
+        if i < 2:
+            text += " Die Hammingdistanz zwischen Codewoertern ist entscheidend."
+        if i == 0:
+            text += " Denn die Hammingdistanz misst, wie die Hammingdistanz zaehlt."
+        chunks.append(Chunk(id=f"c-{i:04d}", quelle="vorlesung",
+                            position=f"vl, Min. {i}:00", text=text))
+    themen = ergaenze_aus_transkript([Thema(id="t-01", titel="Bestehendes")], chunks)
+    neue = [t.titel.lower() for t in themen[1:]]
+    assert "bedeutet" not in neue and "nämlich" not in neue, neue
+    assert "punkte" not in neue, neue
+    assert "hammingdistanz" in neue, neue

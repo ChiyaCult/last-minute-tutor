@@ -313,7 +313,11 @@ Weitere Annahmen:
   Art steht im Manifest (`quellen[].dokumentart`) und lässt sich mit
   `--dokumentart prosa|folien` erzwingen. **Foliensätze brauchen zwingend das Extra
   `marker`** — ohne es bricht die Aufbereitung ab, statt Formeln lautlos falsch zu
-  übernehmen (s. u.).
+  übernehmen (s. u.). Bei Foliensätzen **benennt zusätzlich das LLM die Themen**
+  (ein gebündelter Aufruf im Generierungsschritt): Die Folien-Kopfzeile trägt bei
+  einem Teil der Folien Tabellen- oder Formelreste statt eines Namens. Ohne
+  LLM-Anbindung bleiben die Kopfzeilen stehen. Der Prosa-Pfad wird nie umbenannt —
+  dort sind die Titel echte Kapitelüberschriften.
 - **Diagramme** (Struktur/Verbindungen) erfasst die Textextraktion nicht — eingebettete Abbildungen werden als Materiallücke markiert; ihre *Text*-Beschriftungen holt die OCR-Stufe teilweise mit ab.
 - Schritt 1 legt sein Zwischenergebnis unter `<modul>/extraktion/` ab — das Modulverzeichnis muss also **beschreibbar** sein.
 

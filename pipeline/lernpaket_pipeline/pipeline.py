@@ -39,7 +39,8 @@ from .extraktion.pdf import (FOLIEN, PROSA, DiagrammRenderer, Ocr,
 from .generierung import Generator, HeuristischerGenerator, LLMGenerator
 from .llm import hole_llm
 from .relevanz import finde_relevanz_marker, gewichte_themen
-from .themen import baue_themenkatalog, ergaenze_aus_transkript, ordne_chunks_zu
+from .themen import (baue_themenkatalog, benenne_themen,
+                     ergaenze_aus_transkript, ordne_chunks_zu)
 from .verifikation import verifiziere
 from .vertrag import (Abbildung, Beleg, Chunk, Lernpaket, Manifest,
                       Materialluecke, Quelle, pruefe_vertrag, schreibe_lernpaket)
@@ -708,11 +709,18 @@ def generiere_lernpaket(
     log.info("Generierung: %d Thema/Themen, Zielformat-Vorschlag '%s'",
              len(themen), zielformat.vorschlag)
 
+    llm = None
     if generator is None:
         llm = hole_llm(llm_anbieter, llm_modell)
         generator = LLMGenerator(llm) if llm is not None else HeuristischerGenerator()
     log.info("Generator: %s", type(generator).__name__)
     zuordnung = ordne_chunks_zu(themen, chunks)
+    # Foliensatz-Titel stammen aus der Folien-Kopfzeile und tragen bei einem
+    # Teil der Folien Tabellen- oder Formelreste statt eines Namens (ADR 0008).
+    # Der Prosa-Pfad bleibt unangetastet: Dort sind die Titel echte Kapitel-
+    # überschriften, die eine Umbenennung nur verschlechtern könnte.
+    if folien_dokumente and llm is not None:
+        themen = benenne_themen(themen, zuordnung, llm)
     # Abbildungen dem Thema ihres Beleg-Chunks zuordnen (leer, wenn ohne Treffer).
     thema_je_chunk = {c.id: tid for tid, cs in zuordnung.items() for c in cs}
     abbildungen = [

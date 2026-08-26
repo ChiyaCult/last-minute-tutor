@@ -8,12 +8,16 @@ zur gröberen Ebene zusammengefasst.
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from .llm import extrahiere_json
 from .vertrag import Beleg, Chunk, Thema
 from .relevanz import STOPPWOERTER, _WORT_RE
+
+log = logging.getLogger("lernpaket")
 
 ZIEL_MIN, ZIEL_MAX = 15, 40
 
@@ -207,12 +211,56 @@ def _themen_aus_seitenbloecken(chunks: List[Chunk],
 # damit 33 Themen; die naiven Ebenen liefern 16 (Kapitel, zu grob) bzw. 240
 # (jeder Kopfzeilenwechsel, zu fein).
 ZIEL_FOLIEN_JE_THEMA = 15
+
+# Schwellen der Transkript-Ergänzung (s. `_ist_fachbegriff`), an den REST-
+# Transkripten geeicht: 989 Chunks aus 17,3 h Vorlesung.
+MIN_NOMEN_ANTEIL = 0.8
+MAX_STREUUNG = 0.05
+# Unterhalb dieser Chunk-Zahl ist die Streuung nicht aussagekräftig: In einem
+# kurzen Transkript steht jedes Wort zwangsläufig in einem großen Anteil der
+# Chunks (gleiche Überlegung wie MIN_CHUNKS_FUER_WAECHTER).
+MIN_CHUNKS_FUER_STREUUNG = 20
+
+
+def _am_satzanfang(text: str, pos: int) -> bool:
+    """Steht das Wort an `pos` am Satzanfang? Dort ist auch ein Verb groß."""
+    davor = text[:pos].rstrip()
+    return not davor or davor[-1] in ".!?:"
 # Anteil der Folien, ab dem eine wiederkehrende Zeile als Rauschen gilt
 # (Modulname, Logo, Fußzeile) — sie steht auf fast jeder Folie und ist nie ein
 # Thementitel.
 FOLIEN_RAUSCH_ANTEIL = 0.7
 
 _FOLIEN_KAPITEL_RE = re.compile(r"^\s*Kapitel\s+(\d+(?:\.\d+)?)\s*$", re.MULTILINE)
+# Überschrift, wie der Dokument-Parser sie aus dem Layout der Folie ableitet.
+_FOLIEN_UEBERSCHRIFT_RE = re.compile(r"^#{1,6} +(\S.*?)\s*$", re.MULTILINE)
+
+# Zeilen, die keine Folien-Kopfzeile sein können. Der Dokument-Parser ordnet die
+# Folie nach Layout, nicht nach Lesefluss — vor der Überschrift stehen darum oft
+# eine Wahrheitstabelle, eine abgesetzte Formel oder ein Aufzählungspunkt. Ohne
+# diese Filterung landet so etwas als Thementitel im Player (gemessen am
+# REST-Lauf: 10 von 37 Titeln, z. B. "| $k$ | $PI$ | $j$ |" oder "6 = 3$ |").
+# Das Leerzeichen hinter dem Aufzählungszeichen ist wesentlich: Ohne es fällt
+# auch jede fett gesetzte Überschrift ("**Digitale Schaltfunktionen**") unter
+# die Regel, und der Titel rutscht auf das erstbeste Diagramm-Label der Folie
+# ("Steuerwerk", "Festplatte") durch.
+_KEINE_KOPFZEILE_RE = re.compile(
+    r"^\s*(?:[-*+•>]\s|\||\d+[.)]\s|\$\$|\\\[|\\begin\{)"  # Aufzählung, Tabelle, Formelblock
+    r"|\|\s*$"                                             # Tabellenzeile (Ende)
+    r"|^[^A-Za-zÄÖÜäöü]*$"                                 # kein einziger Buchstabe
+)
+# Auszeichnung, die nicht in den Titel gehört: HTML-Reste des Parsers und
+# Inline-Mathematik ("Wandlung aus dem Dezimalsystem: N<sup>10</sup> …").
+_TITEL_RAUSCH_RE = re.compile(r"<[^>]+>|\$[^$]*\$|\\[a-zA-Z]+\{[^}]*\}|\\[a-zA-Z]+")
+
+
+def _taugt_als_kopfzeile(zeile: str) -> bool:
+    """Trägt die Zeile einen lesbaren Titel — oder ist sie Layout-Beiwerk?"""
+    if _KEINE_KOPFZEILE_RE.search(zeile):
+        return False
+    kern = _TITEL_RAUSCH_RE.sub("", zeile).strip(" :–-—")
+    # Nach Abzug von Formeln und Auszeichnung muss echter Text übrig bleiben.
+    return len(kern) >= 3 and len(re.findall(r"[A-Za-zÄÖÜäöüß]", kern)) >= 3
 _POSITION_RE = re.compile(r"^(.*), S\. (\d+)$")
 
 
@@ -246,17 +294,27 @@ def _folien_rauschen(chunks: List[Chunk]) -> "set[str]":
 
 
 def _folien_kopfzeile(chunk: Chunk, rauschen: "set[str]") -> str:
-    """Erste inhaltstragende Zeile einer Folie — ihre Kopfzeile.
+    """Die Kopfzeile einer Folie — ihr Titel.
 
-    Die Chunks sind zu diesem Zeitpunkt bereits normalisiert, die Kopfzeile
-    trägt also die Überschriften-Auszeichnung des Dokument-Parsers ("## Nachricht
-    und Signal"). Der Prosa-Pfad wird sie in seiner Überschriften-Regex los;
-    hier muss sie ausdrücklich weg, sonst steht sie im Player im Thementitel.
+    Vorrang hat die **Markdown-Überschrift des Dokument-Parsers**: Marker
+    analysiert das Layout der gerenderten Folie und markiert den Titel als
+    `#`…`####`. Das trifft bei den REST-Folien 73 % der Fälle und ist dem
+    Raten über die Zeilenposition deutlich überlegen — der Parser ordnet die
+    Folie nach Layout, nicht nach Lesefluss, sodass oft eine Wahrheitstabelle
+    oder eine abgesetzte Formel vor dem Titel steht.
+
+    Erst wo er keine Überschrift gesetzt hat, greift die erste Zeile, die als
+    Titel taugt.
     """
-    for zeile in (z.strip() for z in chunk.text.split("\n")):
+    kandidaten = [m.group(1) for m in _FOLIEN_UEBERSCHRIFT_RE.finditer(chunk.text)]
+    kandidaten += [z.strip() for z in chunk.text.split("\n")]
+    for zeile in kandidaten:
+        zeile = zeile.strip().lstrip("#> ").strip()
         if len(zeile) < 3 or zeile in rauschen or zeile.rstrip(".").isdigit():
             continue
-        return _bereinige_titel(zeile.lstrip("#> ").strip())
+        if not _taugt_als_kopfzeile(zeile):
+            continue
+        return _bereinige_titel(_TITEL_RAUSCH_RE.sub("", zeile).strip(" :–-—"))
     return ""
 
 
@@ -419,13 +477,24 @@ def ergaenze_aus_transkript(themen: List[Thema], transkript_chunks: List[Chunk],
         return themen
     haeufigkeit: Dict[str, int] = {}
     fundort: Dict[str, Chunk] = {}
+    mittig: Dict[str, int] = {}         # Vorkommen mitten im Satz (auswertbar)
+    nomen: Dict[str, int] = {}          # davon großgeschrieben
+    streuung: Dict[str, set] = {}       # in wie vielen Chunks kommt das Wort vor
     for chunk in transkript_chunks:
-        for w in _WORT_RE.findall(chunk.text):
+        for treffer in _WORT_RE.finditer(chunk.text):
+            w = treffer.group(0)
             wl = w.lower()
             if wl in STOPPWOERTER or len(wl) < 6:
                 continue
             haeufigkeit[wl] = haeufigkeit.get(wl, 0) + 1
             fundort.setdefault(wl, chunk)
+            streuung.setdefault(wl, set()).add(chunk.id)
+            # Am Satzanfang ist jedes Wort groß — dort sagt die Schreibung
+            # nichts über die Wortart aus, also gar nicht erst mitzählen.
+            if not _am_satzanfang(chunk.text, treffer.start()):
+                mittig[wl] = mittig.get(wl, 0) + 1
+                if w[0].isupper():
+                    nomen[wl] = nomen.get(wl, 0) + 1
 
     themen_woerter = set()
     for thema in themen:
@@ -440,8 +509,32 @@ def ergaenze_aus_transkript(themen: List[Thema], transkript_chunks: List[Chunk],
                                           chunk_id=chunk.id))
                 break
 
+    def _ist_fachbegriff(w: str, n: int) -> bool:
+        """Fachbegriff oder Redefüllsel? Zwei Merkmale, beide am Material geeicht.
+
+        Ohne diese Prüfung landen schlicht die häufigsten Transkriptwörter im
+        Katalog — bei REST waren das "Bedeutet", "Nämlich" und "Punkte".
+
+        1. **Nomen**: Deutsch schreibt Substantive groß, und ein Thema ist immer
+           ein Substantiv. Mitten im Satz großgeschrieben zu sein trennt
+           "Schaltfunktion" (99 %) von "bedeutet" (0 %) und "nämlich" (0 %).
+        2. **Streuung**: Ein Fachbegriff gehört zu seinem Thema und taucht darum
+           nur in wenigen Chunks auf; ein Allerweltswort zieht sich durch die
+           ganze Vorlesung. "Punkte" ist ein Nomen, steht aber in 6,4 % aller
+           Chunks — "Informationsgehalt" in 4,3 %, "Register" in 3,7 %.
+        """
+        auswertbar = mittig.get(w, 0)
+        # Fehlende Evidenz ist kein Gegenbeweis: Ein Begriff, der stets einen
+        # Satz eröffnet ("Hashtabellen speichern …"), lässt sich so nicht
+        # beurteilen und wird deshalb nicht verworfen.
+        if auswertbar and nomen.get(w, 0) / auswertbar <= MIN_NOMEN_ANTEIL:
+            return False
+        if len(transkript_chunks) < MIN_CHUNKS_FUER_STREUUNG:
+            return True
+        return len(streuung.get(w, ())) / len(transkript_chunks) < MAX_STREUUNG
+
     neue = [(w, n) for w, n in haeufigkeit.items()
-            if n >= min_nennungen and w not in themen_woerter]
+            if n >= min_nennungen and w not in themen_woerter and _ist_fachbegriff(w, n)]
     neue.sort(key=lambda p: (-p[1], p[0]))
     platz = max(0, ZIEL_MAX - len(themen))
     for w, _ in neue[:min(5, platz)]:
@@ -488,3 +581,70 @@ def ordne_chunks_zu(themen: List[Thema], chunks: List[Chunk]) -> Dict[str, List[
             if titel_woerter and titel_woerter & chunk_woerter:
                 zuordnung[thema.id].append(chunk)
     return zuordnung
+
+
+# --- Benennung durch das Reasoning-LLM (ADR 0008) ---------------------------
+
+BENENNUNG_SYSTEM = (
+    "Du benennst Themen eines Lernpakets für eine Klausurvorbereitung. "
+    "Du bekommst je Thema Auszüge aus dem Studienmaterial und gibst einen "
+    "kurzen, fachlich präzisen Titel zurück. Erfinde nichts, was nicht im "
+    "Auszug steht."
+)
+# So viel Text je Thema geht in den Prompt — genug, um das Thema zu erkennen,
+# wenig genug, dass 40 Themen in einen Aufruf passen.
+BENENNUNG_ZEICHEN_JE_THEMA = 600
+
+
+def _benennungs_prompt(themen: List[Thema], zuordnung: Dict[str, List[Chunk]]) -> str:
+    teile = ["Benenne jedes Thema. Antworte als JSON-Objekt {\"t-01\": \"Titel\", …} "
+             "mit genau einem Titel je Thema-ID.",
+             "Regeln: 3–6 Wörter, deutsches Substantiv-Titel (kein Satz), keine "
+             "Formeln, kein Markdown, keine Nummerierung. Wenn der Auszug nichts "
+             "hergibt, gib den bisherigen Titel unverändert zurück.", ""]
+    for thema in themen:
+        auszug = " ".join(c.text for c in zuordnung.get(thema.id, [])[:6])
+        auszug = re.sub(r"\s+", " ", auszug)[:BENENNUNG_ZEICHEN_JE_THEMA]
+        teile.append(f"{thema.id} (bisher: {thema.titel!r})\n{auszug}\n")
+    return "\n".join(teile)
+
+
+def benenne_themen(themen: List[Thema], zuordnung: Dict[str, List[Chunk]],
+                   llm) -> List[Thema]:
+    """Lässt das LLM die Themen benennen — ein gebündelter Aufruf für alle.
+
+    Nötig für Foliensätze (ADR 0008): Deren Titel stammen aus der Folien-
+    Kopfzeile, und die trägt bei einem Teil der Folien Tabellen- oder
+    Formelreste statt eines Namens. Gebündelt statt je Thema, weil ein Aufruf
+    mit 40 kurzen Auszügen deutlich billiger ist als 40 Aufrufe — und weil das
+    Modell die Titel so gegeneinander abgrenzen kann.
+
+    Scheitert der Aufruf oder liefert er Unbrauchbares, bleiben die bisherigen
+    Titel stehen: Die Benennung ist eine Verbesserung, kein Muss.
+    """
+    if llm is None or not themen:
+        return themen
+    try:
+        antwort = llm.frage(BENENNUNG_SYSTEM, _benennungs_prompt(themen, zuordnung),
+                            max_tokens=2048)
+        vorschlaege = extrahiere_json(antwort)
+    except Exception as fehler:  # pragma: no cover - Netz/Format
+        log.warning("Themen-Benennung fehlgeschlagen (%s) — bisherige Titel bleiben.",
+                    fehler)
+        return themen
+    if not isinstance(vorschlaege, dict):
+        log.warning("Themen-Benennung lieferte kein Objekt — bisherige Titel bleiben.")
+        return themen
+    uebernommen = 0
+    for thema in themen:
+        titel = vorschlaege.get(thema.id)
+        if not isinstance(titel, str):
+            continue
+        titel = _bereinige_titel(_TITEL_RAUSCH_RE.sub("", titel)).strip(" :–-—")
+        # Derselbe Maßstab wie für Folien-Kopfzeilen: keine Formeln, keine
+        # Tabellenreste, echter Text. Was ihn nicht besteht, wird verworfen.
+        if titel and _taugt_als_kopfzeile(titel) and len(titel) <= 80:
+            thema.titel = titel
+            uebernommen += 1
+    log.info("Themen benannt: %d von %d Titeln übernommen", uebernommen, len(themen))
+    return _qualifiziere_doppelte_titel(themen)

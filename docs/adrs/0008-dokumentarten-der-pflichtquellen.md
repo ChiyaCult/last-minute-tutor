@@ -70,8 +70,13 @@ bis `ZIEL_FOLIEN_JE_THEMA` erreicht ist. Für REST ergibt das 33 Themen — die 
 Ebenen liefern 16 (Kapitel, zu grob) bzw. 240 (Abschnitte, zu fein).
 
 Die Folien-Kopfzeile trägt den Themen-Titel nur als **Rückfallebene**; benannt wird im
-Generierungsschritt vom LLM, das die Chunks der Gruppe ohnehin sieht. Kopfzeilen
-liefern sonst Titel wie "• 1. Kernimplikanten auswählen:".
+Generierungsschritt vom LLM, das die Chunks der Gruppe ohnehin sieht — in **einem
+gebündelten Aufruf** für alle Themen, weil das billiger ist als einer je Thema und das
+Modell die Titel so gegeneinander abgrenzen kann. Vorschläge werden am selben Maßstab
+geprüft wie Kopfzeilen; was ihn nicht besteht, wird verworfen, und ein gescheiterter
+Aufruf lässt die bisherigen Titel stehen. Kopfzeilen allein liefern sonst Titel wie
+"| $k$ | $PI$ |" oder "8. Schritt:" (gemessen am REST-Lauf: 10 von 37 Titeln unbrauchbar,
+nach Härtung der Kopfzeilen-Erkennung noch 2).
 
 Der Prosa-Pfad bleibt unverändert; die bestehenden Tests sind sein Regressionsschutz,
 ergänzt um goldene Themenzahlen für Mathe 2b (28) und Konzeptionelle Modellierung (14).
