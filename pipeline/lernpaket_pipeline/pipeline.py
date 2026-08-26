@@ -37,7 +37,7 @@ from .extraktion.pdf import (FOLIEN, PROSA, DiagrammRenderer, Ocr,
                              finde_abbildungen, ist_verklebt, lies_pdf,
                              seiten_mit_bildern)
 from .generierung import Generator, HeuristischerGenerator, LLMGenerator
-from .llm import hole_llm
+from .llm import GecachterLLM, hole_llm
 from .relevanz import finde_relevanz_marker, gewichte_themen
 from .themen import (baue_themenkatalog, benenne_themen,
                      ergaenze_aus_transkript, ordne_chunks_zu)
@@ -47,6 +47,8 @@ from .vertrag import (Abbildung, Beleg, Chunk, Lernpaket, Manifest,
 from .zielformat import erkenne_zielformat
 
 EXTRAKTIONS_ORDNER = "extraktion"
+# Antwort-Cache des Generierungsschritts, neben Transkript- und Parser-Cache.
+GENERIERUNGS_CACHE = "generierung"
 
 log = logging.getLogger("lernpaket")
 
@@ -680,6 +682,7 @@ def generiere_lernpaket(
     jetzt: Optional[datetime] = None,
     llm_anbieter: Optional[str] = None,
     llm_modell: Optional[str] = None,
+    cache_dir: Optional[Path] = None,
 ) -> Lernpaket:
     """Schritt 2: Extraktionsergebnis → Lernpaket (Themen, Lehrblöcke, Quiz).
 
@@ -712,7 +715,13 @@ def generiere_lernpaket(
     llm = None
     if generator is None:
         llm = hole_llm(llm_anbieter, llm_modell)
-        generator = LLMGenerator(llm) if llm is not None else HeuristischerGenerator()
+        if llm is not None:
+            # Antwort-Cache: Ein abgebrochener Lauf (Anbieter weg) soll beim
+            # zweiten Anlauf nur die noch fehlenden Aufrufe kosten.
+            llm = GecachterLLM(llm, cache_dir)
+            generator = LLMGenerator(llm)
+        else:
+            generator = HeuristischerGenerator()
     log.info("Generator: %s", type(generator).__name__)
     zuordnung = ordne_chunks_zu(themen, chunks)
     # Foliensatz-Titel stammen aus der Folien-Kopfzeile und tragen bei einem
@@ -732,6 +741,8 @@ def generiere_lernpaket(
     ergebnis = generator.erzeuge(themen, zuordnung, zielformat.vorschlag)
     log.info("Generierung fertig: %d Lehrblock/-blöcke, %d Frage(n) in %.0f s",
              len(ergebnis.lehrbloecke), len(ergebnis.fragen), time.perf_counter() - start)
+    if isinstance(llm, GecachterLLM) and (llm.treffer or llm.aufrufe):
+        log.info("LLM-Aufrufe: %d neu, %d aus dem Cache", llm.aufrufe, llm.treffer)
     materialluecken.extend(ergebnis.materialluecken)
     materialluecken.extend(verifiziere(ergebnis.fragen, ergebnis.lehrbloecke, chunks))
 
@@ -778,7 +789,8 @@ def erzeuge_lernpaket(
         modul_id=modul_id or modul_dir.name.lower().replace(" ", "-"),
         titel=titel or modul_dir.name,
         generator=generator, jetzt=jetzt,
-        llm_anbieter=llm_anbieter, llm_modell=llm_modell)
+        llm_anbieter=llm_anbieter, llm_modell=llm_modell,
+        cache_dir=modul_dir / EXTRAKTIONS_ORDNER / GENERIERUNGS_CACHE)
 
 
 def erzeuge_und_schreibe(modul_dir: Path, ziel: Path, **kwargs) -> Path:

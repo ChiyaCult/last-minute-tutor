@@ -21,7 +21,9 @@ import sys
 from pathlib import Path
 
 from .llm import ANBIETER
-from .pipeline import (ModulBelegt, erzeuge_und_schreibe, extrahiere_material,
+from .llm import LLMDienstNichtVerfuegbar
+from .pipeline import (EXTRAKTIONS_ORDNER, GENERIERUNGS_CACHE, ModulBelegt,
+                       erzeuge_und_schreibe, extrahiere_material,
                        generiere_lernpaket, lade_extraktion,
                        schreibe_extraktion)
 from .vertrag import schreibe_lernpaket
@@ -142,7 +144,8 @@ def _cmd_generieren(argv) -> int:
         extraktion,
         modul_id=args.modul_id or args.modul_dir.name.lower().replace(" ", "-"),
         titel=args.titel or args.modul_dir.name,
-        llm_anbieter=args.llm, llm_modell=args.llm_modell)
+        llm_anbieter=args.llm, llm_modell=args.llm_modell,
+        cache_dir=args.modul_dir / EXTRAKTIONS_ORDNER / GENERIERUNGS_CACHE)
     ziel = schreibe_lernpaket(paket, args.ziel / paket.manifest.modul_id)
     print(f"Lernpaket geschrieben: {ziel}")
     _melde_luecken(paket.manifest.materialluecken)
@@ -202,6 +205,12 @@ def main(argv=None) -> int:
         if argv and argv[0] == "generieren":
             return _cmd_generieren(argv[1:])
         return _cmd_komplett(argv)
+    except LLMDienstNichtVerfuegbar as ausfall:
+        # Abbruch statt stiller Degradation (ADR 0002/0003): Der Nutzer hat ein
+        # LLM angefordert und soll kein heuristisches Paket untergeschoben
+        # bekommen. Der Cache macht den zweiten Anlauf billig.
+        print(f"Abgebrochen: {ausfall}", file=sys.stderr)
+        return 3
     except ModulBelegt as belegt:
         # Erwarteter Zustand mit klarer Botschaft — ein Traceback wäre hier nur
         # Lärm, der die eigentliche Anweisung überdeckt.

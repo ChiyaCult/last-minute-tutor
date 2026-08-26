@@ -19,12 +19,17 @@ Vertrag identisch.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import os
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Optional, Protocol
+
+log = logging.getLogger("lernpaket")
 
 ANBIETER = ("anthropic", "gemini", "copilot", "ollama")
 STANDARD_MODELLE = {
@@ -52,6 +57,81 @@ class ReasoningLLM(Protocol):
     def frage(self, system: str, prompt: str, max_tokens: int = 4096) -> str: ...
 
 
+class LLMDienstNichtVerfuegbar(RuntimeError):
+    """Der Anbieter ist auch nach allen Wiederholversuchen nicht erreichbar.
+
+    Bricht den Lauf ab, statt ihn stillschweigend in geringerer Qualität zu
+    Ende zu bringen: Wer ein LLM angefordert hat, will kein heuristisches
+    Ersatzpaket, das später niemand mehr als solches erkennt. Dank des
+    Antwort-Caches kostet ein späterer zweiter Anlauf nur die noch fehlenden
+    Aufrufe.
+    """
+
+
+# Diese Fehler gehen vorüber — der Dienst ist überlastet oder kurz weg.
+# Alles andere (401 Schlüssel falsch, 400 Anfrage kaputt, 404 Modell weg) ist
+# dauerhaft und wird durch Wiederholen nicht besser.
+VORUEBERGEHENDE_CODES = (408, 409, 425, 429, 500, 502, 503, 504)
+
+
+def ist_voruebergehend(fehler: BaseException) -> bool:
+    """Lohnt ein späterer zweiter Anlauf?"""
+    if isinstance(fehler, urllib.error.HTTPError):
+        return fehler.code in VORUEBERGEHENDE_CODES
+    # Netzfehler ohne HTTP-Antwort (DNS, Verbindungsabbruch, Timeout).
+    return isinstance(fehler, (urllib.error.URLError, TimeoutError, OSError))
+
+
+class GecachterLLM:
+    """Legt jede Antwort unter dem Hash ihrer Anfrage ab und liest sie wieder.
+
+    Der Generierungsschritt kostet Kontingent; ein zweiter Anlauf nach einem
+    Abbruch soll nur die noch fehlenden Themen bezahlen. Der Schlüssel umfasst
+    Modell, System-Prompt und Prompt — ändert sich das Material (und damit die
+    Chunk-Texte im Prompt), greift der Cache bewusst nicht mehr.
+
+    Gleiche Bauart wie der Transkript- und der Parser-Cache: eine Datei je
+    Eintrag unter `<modul>/extraktion/`, für den Nutzer löschbar.
+    """
+
+    def __init__(self, llm: ReasoningLLM, verzeichnis: Optional[Path]):
+        self.llm = llm
+        self.verzeichnis = Path(verzeichnis) if verzeichnis else None
+        self.treffer = 0
+        self.aufrufe = 0
+
+    @property
+    def modell(self) -> str:
+        return getattr(self.llm, "modell", type(self.llm).__name__)
+
+    def _datei(self, system: str, prompt: str) -> Optional[Path]:
+        if self.verzeichnis is None:
+            return None
+        schluessel = hashlib.sha256(
+            "\x00".join((self.modell, system, prompt)).encode("utf-8")).hexdigest()
+        return self.verzeichnis / f"{schluessel[:32]}.json"
+
+    def frage(self, system: str, prompt: str, max_tokens: int = 4096) -> str:
+        datei = self._datei(system, prompt)
+        if datei is not None and datei.exists():
+            try:
+                self.treffer += 1
+                return json.loads(datei.read_text(encoding="utf-8"))["antwort"]
+            except (OSError, ValueError, KeyError):
+                log.warning("Cache-Eintrag unlesbar, wird neu geholt: %s", datei.name)
+        antwort = self.llm.frage(system, prompt, max_tokens=max_tokens)
+        self.aufrufe += 1
+        if datei is not None:
+            try:
+                datei.parent.mkdir(parents=True, exist_ok=True)
+                datei.write_text(json.dumps(
+                    {"modell": self.modell, "prompt": prompt, "antwort": antwort},
+                    ensure_ascii=False), encoding="utf-8")
+            except OSError as fehler:  # pragma: no cover - Platte voll o. Ä.
+                log.warning("Antwort konnte nicht gecacht werden (%s).", fehler)
+        return antwort
+
+
 def _post_json(url: str, daten: dict, headers: dict, versuche: int = VERSUCHE) -> dict:
     """POST mit Backoff bei Rate-Limit/Serverfehlern (Free-Tier-Kontingente)."""
     anfrage = urllib.request.Request(
@@ -62,7 +142,7 @@ def _post_json(url: str, daten: dict, headers: dict, versuche: int = VERSUCHE) -
             with urllib.request.urlopen(anfrage, timeout=300) as antwort:
                 return json.loads(antwort.read().decode("utf-8"))
         except urllib.error.HTTPError as fehler:
-            if fehler.code not in (429, 500, 502, 503) or i == versuche - 1:
+            if fehler.code not in VORUEBERGEHENDE_CODES or i == versuche - 1:
                 raise
             retry_after = fehler.headers.get("Retry-After", "")
             pause = float(retry_after) if retry_after.isdigit() else 2.0 ** (i + 2)

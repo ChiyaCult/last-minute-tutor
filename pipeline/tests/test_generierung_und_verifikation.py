@@ -2,7 +2,10 @@
 (Issues #21, #24, #25, #26)."""
 import urllib.error
 
+import pytest
+
 from lernpaket_pipeline.generierung import HeuristischerGenerator, LLMGenerator
+from lernpaket_pipeline.llm import GecachterLLM, LLMDienstNichtVerfuegbar
 from lernpaket_pipeline.pipeline import erzeuge_lernpaket
 from lernpaket_pipeline.verifikation import verifiziere
 from lernpaket_pipeline.vertrag import Beleg, Chunk, Frage, Thema
@@ -92,8 +95,9 @@ def test_pipeline_verifiziert_alle_fragen(modul_dir):
 class AussetzendesLLM:
     """LLM, das bei bestimmten Themen einen Serverfehler wirft."""
 
-    def __init__(self, fehlerhafte_themen, antwort=None):
+    def __init__(self, fehlerhafte_themen, antwort=None, code=503):
         self.fehlerhafte = set(fehlerhafte_themen)
+        self.code = code
         self.aufrufe = 0
         self.antwort = antwort or (
             '{"lehrbloecke": [{"tiefe": "auffrischung", '
@@ -103,11 +107,11 @@ class AussetzendesLLM:
             '"chunk_ids": ["c-0001"]}]}')
 
     def frage(self, system, prompt, max_tokens=4096):
-        self.aufrufe += 1
         for kennung in self.fehlerhafte:
             if kennung in prompt:
                 raise urllib.error.HTTPError(
-                    "https://api.example", 503, "Service Unavailable", {}, None)
+                    "https://api.example", self.code, "Fehler", {}, None)
+        self.aufrufe += 1   # nur beantwortete Anfragen — sie kosten Kontingent
         return self.antwort
 
 
@@ -118,29 +122,56 @@ def _themen_mit_chunks(anzahl):
     return themen, zuordnung
 
 
-def test_serverfehler_bei_einem_thema_kippt_nicht_den_lauf():
-    """Ein 503 mitten im Lauf darf nicht alle bereits erzeugten Themen mitreißen.
+def test_voruebergehender_ausfall_bricht_ab_statt_zu_degradieren():
+    """Wer ein LLM angefordert hat, bekommt kein heuristisches Ersatzpaket.
 
-    Wortlaut aus einem REST-Lauf: "HTTP Error 503: Service Unavailable". Ohne
-    Auffangen verliert der Nutzer die bezahlte Arbeit aller Themen davor.
+    Ein stillschweigend heruntergestuftes Paket sähe später aus wie ein
+    vollwertiges — beim Lernen fällt der Unterschied erst auf, wenn es zu spät
+    ist. Also klarer Abbruch; der Antwort-Cache macht den zweiten Anlauf billig.
     """
     themen, zuordnung = _themen_mit_chunks(4)
     llm = AussetzendesLLM(fehlerhafte_themen=["Thema 2"])
+    with pytest.raises(LLMDienstNichtVerfuegbar) as fehler:
+        LLMGenerator(llm).erzeuge(themen, zuordnung, "freitext")
+    assert "Thema 2" in str(fehler.value)
+    assert "Cache" in str(fehler.value), "Meldung muss den Weg nach vorn nennen"
+
+
+def test_dauerhafter_fehler_markiert_nur_das_thema():
+    """400/404 gehen nicht vorüber — markieren und weiter, aber ohne Ersatzinhalt."""
+    themen, zuordnung = _themen_mit_chunks(3)
+    llm = AussetzendesLLM(fehlerhafte_themen=["Thema 2"], code=400)
     ergebnis = LLMGenerator(llm).erzeuge(themen, zuordnung, "freitext")
     erzeugte = {lb.thema_id for lb in ergebnis.lehrbloecke}
-    assert {"t-01", "t-03", "t-04"} <= erzeugte, "übrige Themen müssen entstehen"
-    assert any("t-02" == m.thema_id for m in ergebnis.materialluecken)
-    # Das ausgefallene Thema darf nicht leer bleiben — Ersatz aus der Heuristik.
-    assert "t-02" in erzeugte, "ausgefallenes Thema braucht heuristischen Ersatz"
+    assert erzeugte == {"t-01", "t-03"}, "kein heuristischer Ersatz für t-02"
+    assert any(m.thema_id == "t-02" for m in ergebnis.materialluecken)
 
 
-def test_dauerhafter_ausfall_hoert_auf_zu_fragen():
-    """Ist der Dienst ganz weg, ist es sinnlos, 40-mal in den Timeout zu laufen."""
-    themen, zuordnung = _themen_mit_chunks(12)
-    llm = AussetzendesLLM(fehlerhafte_themen=["Thema"])   # trifft alle
-    ergebnis = LLMGenerator(llm).erzeuge(themen, zuordnung, "freitext")
-    assert llm.aufrufe <= 4, f"nach Serie von Fehlern abbrechen, war {llm.aufrufe}"
-    # Trotzdem ein vollständiges Paket, nur heuristisch.
-    assert {lb.thema_id for lb in ergebnis.lehrbloecke} == {t.id for t in themen}
-    assert any("Dienst" in m.beschreibung or "LLM" in m.beschreibung
-               for m in ergebnis.materialluecken)
+def test_cache_spart_den_zweiten_lauf(tmp_path):
+    """Nach einem Abbruch darf der zweite Anlauf nur die fehlenden Themen kosten."""
+    themen, zuordnung = _themen_mit_chunks(3)
+    # Erster Lauf: Thema 3 fällt aus, Thema 1 und 2 sind bezahlt.
+    llm = AussetzendesLLM(fehlerhafte_themen=["Thema 3"])
+    gecacht = GecachterLLM(llm, tmp_path / "generierung")
+    with pytest.raises(LLMDienstNichtVerfuegbar):
+        LLMGenerator(gecacht).erzeuge(themen, zuordnung, "freitext")
+    assert llm.aufrufe == 2, "zwei Themen wurden tatsächlich angefragt"
+
+    # Zweiter Anlauf, Dienst wieder da: nur noch das fehlende Thema kostet.
+    llm2 = AussetzendesLLM(fehlerhafte_themen=[])
+    gecacht2 = GecachterLLM(llm2, tmp_path / "generierung")
+    ergebnis = LLMGenerator(gecacht2).erzeuge(themen, zuordnung, "freitext")
+    assert llm2.aufrufe == 1, f"nur das fehlende Thema, war {llm2.aufrufe}"
+    assert gecacht2.treffer == 2, "die beiden anderen kamen aus dem Cache"
+    assert {lb.thema_id for lb in ergebnis.lehrbloecke} == {"t-01", "t-02", "t-03"}
+
+
+def test_cache_greift_nicht_bei_geaendertem_material(tmp_path):
+    """Neues Material heißt neuer Prompt — sonst lieferte der Cache Veraltetes."""
+    themen, zuordnung = _themen_mit_chunks(1)
+    llm = AussetzendesLLM(fehlerhafte_themen=[])
+    gecacht = GecachterLLM(llm, tmp_path / "generierung")
+    LLMGenerator(gecacht).erzeuge(themen, zuordnung, "freitext")
+    zuordnung["t-01"][0].text = "Ganz anderer Inhalt zum selben Thema, mit Sätzen. " * 6
+    LLMGenerator(gecacht).erzeuge(themen, zuordnung, "freitext")
+    assert llm.aufrufe == 2, "geänderter Prompt muss neu angefragt werden"

@@ -19,18 +19,14 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Protocol, Tuple
 
 from .extraktion.formeln import ist_formelzeile
-from .llm import ReasoningLLM, extrahiere_json
+from .llm import (LLMDienstNichtVerfuegbar, ReasoningLLM, extrahiere_json,
+                  ist_voruebergehend)
 from .relevanz import _WORT_RE
 from .vertrag import Beleg, Chunk, Frage, Lehrblock, Materialluecke, Thema
 
 ALLE_FORMATE = ("mc", "rechnen", "freitext", "beweis")
 
 log = logging.getLogger("lernpaket")
-
-# So viele fehlgeschlagene LLM-Aufrufe in Folge gelten als Ausfall des Dienstes.
-# Jeder Fehlversuch hat da bereits die Wiederholungen aus `llm._post_json`
-# hinter sich (rund eine halbe Minute) — weiterzufragen kostet nur Zeit.
-MAX_FEHLERSERIE = 3
 
 _SATZ_RE = re.compile(r"(?<=[.!?])\s+")
 _DEFINITION_RE = re.compile(
@@ -227,24 +223,16 @@ class LLMGenerator:
     def __init__(self, llm: ReasoningLLM):
         self.llm = llm
 
-    def _heuristischer_ersatz(self, thema: Thema, chunks: List[Chunk], zielformat: str,
-                              ergebnis: GenerierungsErgebnis) -> None:
-        """Erzeugt das Thema extraktiv weiter, statt es leer zu lassen.
-
-        Ein schwächerer Lehrblock ist vor der Klausur mehr wert als ein leeres
-        Thema — und der Vertrag ist derselbe.
-        """
-        ersatz = HeuristischerGenerator().erzeuge([thema], {thema.id: chunks}, zielformat)
-        ergebnis.lehrbloecke.extend(ersatz.lehrbloecke)
-        ergebnis.fragen.extend(ersatz.fragen)
-        ergebnis.materialluecken.extend(ersatz.materialluecken)
-
     def erzeuge(self, themen: List[Thema], zuordnung: Dict[str, List[Chunk]],
                 zielformat: str) -> GenerierungsErgebnis:
+        """Erzeugt je Thema einen LLM-Aufruf.
+
+        Kein heuristischer Ersatz: Wer ein LLM angefordert hat, bekommt entweder
+        LLM-Inhalt oder eine ehrliche Fehlermeldung. Ein stillschweigend
+        heruntergestuftes Paket sähe später aus wie ein vollwertiges.
+        """
         ergebnis = GenerierungsErgebnis()
-        fehlerserie = 0
-        dienst_aufgegeben = False
-        for thema in themen:
+        for nummer, thema in enumerate(themen, start=1):
             chunks = zuordnung.get(thema.id, [])
             if not chunks:
                 ergebnis.materialluecken.append(Materialluecke(
@@ -252,38 +240,30 @@ class LLMGenerator:
                     beschreibung=f"Kein Material zum Thema '{thema.titel}'.",
                 ))
                 continue
-            if dienst_aufgegeben:
-                self._heuristischer_ersatz(thema, chunks, zielformat, ergebnis)
-                continue
             try:
                 roh = self.llm.frage(_SYSTEM_PROMPT,
                                      self._prompt(thema, chunks, zielformat))
             except Exception as fehler:
-                # Ein Aussetzer des Anbieters darf nicht die Arbeit aller
-                # vorherigen Themen mitreißen — die ist bereits bezahlt.
-                fehlerserie += 1
-                log.warning("LLM-Aufruf für Thema '%s' fehlgeschlagen (%s) — "
-                            "heuristischer Ersatz.", thema.titel, fehler)
+                if ist_voruebergehend(fehler):
+                    # Der Dienst ist weg — weiterzufragen liefert nur weitere
+                    # Fehlschläge. Abbrechen; der Antwort-Cache hält die bereits
+                    # bezahlten Themen fest, ein zweiter Anlauf setzt dort auf.
+                    raise LLMDienstNichtVerfuegbar(
+                        f"LLM-Anbieter nicht erreichbar bei Thema {nummer} von "
+                        f"{len(themen)} ('{thema.titel}'): {fehler}. Die bis hierhin "
+                        "erzeugten Themen liegen im Antwort-Cache — derselbe Aufruf "
+                        "später wiederholt kostet nur die noch fehlenden."
+                    ) from fehler
+                # Dauerhafter Fehler (Anfrage zu groß, Modell weg): Wiederholen
+                # hilft nicht, also markieren und mit dem nächsten Thema weiter.
+                log.warning("LLM-Aufruf für Thema '%s' dauerhaft fehlgeschlagen: %s",
+                            thema.titel, fehler)
                 ergebnis.materialluecken.append(Materialluecke(
                     thema_id=thema.id, art="schweigen",
                     beschreibung=f"Thema '{thema.titel}': LLM-Aufruf fehlgeschlagen "
-                                 f"({fehler}) — Inhalt ersatzweise heuristisch aus dem "
-                                 "Material gezogen, also deutlich knapper."))
-                self._heuristischer_ersatz(thema, chunks, zielformat, ergebnis)
-                if fehlerserie >= MAX_FEHLERSERIE:
-                    # Der Anbieter ist offenbar ganz weg. Weiter zu fragen heißt
-                    # nur, je Thema erneut durch alle Wiederholversuche zu laufen.
-                    dienst_aufgegeben = True
-                    log.warning("Nach %d Fehlversuchen in Folge: restliche Themen "
-                                "heuristisch.", fehlerserie)
-                    ergebnis.materialluecken.append(Materialluecke(
-                        thema_id="", art="schweigen",
-                        beschreibung=f"LLM-Dienst nach {fehlerserie} Fehlversuchen in "
-                                     "Folge aufgegeben — die übrigen Themen wurden "
-                                     "heuristisch erzeugt. Für volle Qualität "
-                                     "`lernpaket generieren` später wiederholen."))
+                                 f"({fehler}) — für dieses Thema fehlen Lehrblöcke "
+                                 "und Fragen im Paket."))
                 continue
-            fehlerserie = 0
             self._uebernehme(thema, chunks, roh, ergebnis)
         for frage in ergebnis.fragen:
             if frage.thema_id and frage.format == zielformat:

@@ -155,6 +155,7 @@ externen Monitor ebenfalls.
 | ----- | --- | --------- |
 | Transkripte | `<modul>/extraktion/transkripte/` | Dateiname + Größe |
 | Parser-Ergebnis je PDF | `<modul>/extraktion/dokumente/` | Dateiname + Größe + Parser |
+| LLM-Antworten der Generierung | `<modul>/extraktion/generierung/` | Modell + Prompt (also auch das Material) |
 
 Du kannst die Arbeit also über mehrere Nächte verteilen. Noch **nicht** gecacht
 ist die Folien-Extraktion — die läuft bei jedem Lauf über jedes Video erneut.
@@ -342,6 +343,16 @@ Ohne explizite Wahl werden `anthropic`/`gemini` anhand vorhandener Schlüssel
 auto-erkannt; `copilot` und `ollama` müssen explizit gewählt werden. Jedes
 Artefakt trägt Belege; ein Verifikationsdurchlauf prüft Antworten gegen die
 Quelle (ADR 0003).
+
+**Wenn der Anbieter aussetzt**, bricht der Generierungsschritt mit Exit-Code 3 ab,
+statt heimlich auf die Heuristik zurückzufallen — ein heruntergestuftes Paket sieht
+später aus wie ein vollwertiges, und das merkst du erst beim Lernen. Jede Anfrage
+wird zuvor bis zu sechsmal wiederholt (Backoff bis 64 s), und **jede beantwortete
+Anfrage landet im Cache**: Derselbe Aufruf später wiederholt kostet nur die noch
+fehlenden Themen. Ändert sich das Material, ändert sich der Prompt und der Cache
+greift bewusst nicht mehr. Ein *dauerhafter* Fehler bei einem einzelnen Thema
+(z. B. Anfrage zu groß) stoppt den Lauf nicht: Das Thema wird als Materiallücke
+vermerkt und bleibt ohne Lehrblöcke — auch hier ohne heuristischen Ersatz.
 
 ## Aufbereitung per Docker (Server-Betrieb)
 

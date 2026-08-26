@@ -133,3 +133,39 @@ def test_cli_meldet_belegtes_modul_ohne_traceback(tmp_path: Path, capsys):
     fehler = capsys.readouterr().err
     assert "wird bereits aufbereitet" in fehler
     assert "Traceback" not in fehler
+
+
+def test_generierungs_cache_ueberlebt_den_prozess(modul_dir):
+    """Der Cache muss auf Platte liegen, nicht im Speicher — ein Abbruch beendet
+    den Prozess, und genau dann soll der zweite Anlauf davon zehren."""
+    from lernpaket_pipeline.pipeline import (EXTRAKTIONS_ORDNER, GENERIERUNGS_CACHE,
+                                             extrahiere_material, generiere_lernpaket)
+    from lernpaket_pipeline.generierung import LLMGenerator
+    from lernpaket_pipeline.llm import GecachterLLM
+
+    class ZaehlendesLLM:
+        modell = "test-modell"
+
+        def __init__(self):
+            self.aufrufe = 0
+
+        def frage(self, system, prompt, max_tokens=4096):
+            self.aufrufe += 1
+            return ('{"lehrbloecke": [], "fragen": [], "materialluecken": []}')
+
+    extraktion = extrahiere_material(modul_dir, mit_diagrammen=False)
+    cache = modul_dir / EXTRAKTIONS_ORDNER / GENERIERUNGS_CACHE
+
+    erst = ZaehlendesLLM()
+    generiere_lernpaket(extraktion, modul_id="m", titel="M",
+                        generator=LLMGenerator(GecachterLLM(erst, cache)))
+    assert erst.aufrufe > 0
+    assert list(cache.glob("*.json")), "Cache muss Dateien anlegen"
+
+    # Frischer Wrapper wie nach einem Neustart des Prozesses.
+    zweit = ZaehlendesLLM()
+    gecacht = GecachterLLM(zweit, cache)
+    generiere_lernpaket(extraktion, modul_id="m", titel="M",
+                        generator=LLMGenerator(gecacht))
+    assert zweit.aufrufe == 0, "zweiter Lauf darf nichts mehr kosten"
+    assert gecacht.treffer == erst.aufrufe
