@@ -1,6 +1,8 @@
 """Generierungs-Vertrag (Belege, Formate, Materiallücke) und Verifikation
 (Issues #21, #24, #25, #26)."""
-from lernpaket_pipeline.generierung import HeuristischerGenerator
+import urllib.error
+
+from lernpaket_pipeline.generierung import HeuristischerGenerator, LLMGenerator
 from lernpaket_pipeline.pipeline import erzeuge_lernpaket
 from lernpaket_pipeline.verifikation import verifiziere
 from lernpaket_pipeline.vertrag import Beleg, Chunk, Frage, Thema
@@ -85,3 +87,60 @@ def test_pipeline_verifiziert_alle_fragen(modul_dir):
     assert all(f.verifikation.status == "bestaetigt" for f in paket.fragen), [
         (f.id, f.verifikation.hinweis) for f in paket.fragen
         if f.verifikation.status != "bestaetigt"]
+
+
+class AussetzendesLLM:
+    """LLM, das bei bestimmten Themen einen Serverfehler wirft."""
+
+    def __init__(self, fehlerhafte_themen, antwort=None):
+        self.fehlerhafte = set(fehlerhafte_themen)
+        self.aufrufe = 0
+        self.antwort = antwort or (
+            '{"lehrbloecke": [{"tiefe": "auffrischung", '
+            '"inhalt_markdown": "Sortieren ist das Ordnen von Werten.", "chunk_ids": ["c-0001"]}], '
+            '"fragen": [{"format": "freitext", "frage_markdown": "Was ist Sortieren?", '
+            '"antwort": "Sortieren ist das Ordnen von Werten nach Groesse.", "erklaerung_markdown": "Siehe Text.", '
+            '"chunk_ids": ["c-0001"]}]}')
+
+    def frage(self, system, prompt, max_tokens=4096):
+        self.aufrufe += 1
+        for kennung in self.fehlerhafte:
+            if kennung in prompt:
+                raise urllib.error.HTTPError(
+                    "https://api.example", 503, "Service Unavailable", {}, None)
+        return self.antwort
+
+
+def _themen_mit_chunks(anzahl):
+    themen = [Thema(id=f"t-{i:02d}", titel=f"Thema {i}") for i in range(1, anzahl + 1)]
+    zuordnung = {t.id: [Chunk(id="c-0001", quelle="studienbrief", position="S. 1",
+                              text="Sortieren ist das Ordnen von Werten nach Groesse. " * 12)] for t in themen}
+    return themen, zuordnung
+
+
+def test_serverfehler_bei_einem_thema_kippt_nicht_den_lauf():
+    """Ein 503 mitten im Lauf darf nicht alle bereits erzeugten Themen mitreißen.
+
+    Wortlaut aus einem REST-Lauf: "HTTP Error 503: Service Unavailable". Ohne
+    Auffangen verliert der Nutzer die bezahlte Arbeit aller Themen davor.
+    """
+    themen, zuordnung = _themen_mit_chunks(4)
+    llm = AussetzendesLLM(fehlerhafte_themen=["Thema 2"])
+    ergebnis = LLMGenerator(llm).erzeuge(themen, zuordnung, "freitext")
+    erzeugte = {lb.thema_id for lb in ergebnis.lehrbloecke}
+    assert {"t-01", "t-03", "t-04"} <= erzeugte, "übrige Themen müssen entstehen"
+    assert any("t-02" == m.thema_id for m in ergebnis.materialluecken)
+    # Das ausgefallene Thema darf nicht leer bleiben — Ersatz aus der Heuristik.
+    assert "t-02" in erzeugte, "ausgefallenes Thema braucht heuristischen Ersatz"
+
+
+def test_dauerhafter_ausfall_hoert_auf_zu_fragen():
+    """Ist der Dienst ganz weg, ist es sinnlos, 40-mal in den Timeout zu laufen."""
+    themen, zuordnung = _themen_mit_chunks(12)
+    llm = AussetzendesLLM(fehlerhafte_themen=["Thema"])   # trifft alle
+    ergebnis = LLMGenerator(llm).erzeuge(themen, zuordnung, "freitext")
+    assert llm.aufrufe <= 4, f"nach Serie von Fehlern abbrechen, war {llm.aufrufe}"
+    # Trotzdem ein vollständiges Paket, nur heuristisch.
+    assert {lb.thema_id for lb in ergebnis.lehrbloecke} == {t.id for t in themen}
+    assert any("Dienst" in m.beschreibung or "LLM" in m.beschreibung
+               for m in ergebnis.materialluecken)

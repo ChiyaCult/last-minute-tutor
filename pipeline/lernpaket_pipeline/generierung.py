@@ -13,6 +13,7 @@ Zwei Generatoren mit gleichem Vertrag:
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Protocol, Tuple
@@ -23,6 +24,13 @@ from .relevanz import _WORT_RE
 from .vertrag import Beleg, Chunk, Frage, Lehrblock, Materialluecke, Thema
 
 ALLE_FORMATE = ("mc", "rechnen", "freitext", "beweis")
+
+log = logging.getLogger("lernpaket")
+
+# So viele fehlgeschlagene LLM-Aufrufe in Folge gelten als Ausfall des Dienstes.
+# Jeder Fehlversuch hat da bereits die Wiederholungen aus `llm._post_json`
+# hinter sich (rund eine halbe Minute) — weiterzufragen kostet nur Zeit.
+MAX_FEHLERSERIE = 3
 
 _SATZ_RE = re.compile(r"(?<=[.!?])\s+")
 _DEFINITION_RE = re.compile(
@@ -219,9 +227,23 @@ class LLMGenerator:
     def __init__(self, llm: ReasoningLLM):
         self.llm = llm
 
+    def _heuristischer_ersatz(self, thema: Thema, chunks: List[Chunk], zielformat: str,
+                              ergebnis: GenerierungsErgebnis) -> None:
+        """Erzeugt das Thema extraktiv weiter, statt es leer zu lassen.
+
+        Ein schwächerer Lehrblock ist vor der Klausur mehr wert als ein leeres
+        Thema — und der Vertrag ist derselbe.
+        """
+        ersatz = HeuristischerGenerator().erzeuge([thema], {thema.id: chunks}, zielformat)
+        ergebnis.lehrbloecke.extend(ersatz.lehrbloecke)
+        ergebnis.fragen.extend(ersatz.fragen)
+        ergebnis.materialluecken.extend(ersatz.materialluecken)
+
     def erzeuge(self, themen: List[Thema], zuordnung: Dict[str, List[Chunk]],
                 zielformat: str) -> GenerierungsErgebnis:
         ergebnis = GenerierungsErgebnis()
+        fehlerserie = 0
+        dienst_aufgegeben = False
         for thema in themen:
             chunks = zuordnung.get(thema.id, [])
             if not chunks:
@@ -230,7 +252,38 @@ class LLMGenerator:
                     beschreibung=f"Kein Material zum Thema '{thema.titel}'.",
                 ))
                 continue
-            roh = self.llm.frage(_SYSTEM_PROMPT, self._prompt(thema, chunks, zielformat))
+            if dienst_aufgegeben:
+                self._heuristischer_ersatz(thema, chunks, zielformat, ergebnis)
+                continue
+            try:
+                roh = self.llm.frage(_SYSTEM_PROMPT,
+                                     self._prompt(thema, chunks, zielformat))
+            except Exception as fehler:
+                # Ein Aussetzer des Anbieters darf nicht die Arbeit aller
+                # vorherigen Themen mitreißen — die ist bereits bezahlt.
+                fehlerserie += 1
+                log.warning("LLM-Aufruf für Thema '%s' fehlgeschlagen (%s) — "
+                            "heuristischer Ersatz.", thema.titel, fehler)
+                ergebnis.materialluecken.append(Materialluecke(
+                    thema_id=thema.id, art="schweigen",
+                    beschreibung=f"Thema '{thema.titel}': LLM-Aufruf fehlgeschlagen "
+                                 f"({fehler}) — Inhalt ersatzweise heuristisch aus dem "
+                                 "Material gezogen, also deutlich knapper."))
+                self._heuristischer_ersatz(thema, chunks, zielformat, ergebnis)
+                if fehlerserie >= MAX_FEHLERSERIE:
+                    # Der Anbieter ist offenbar ganz weg. Weiter zu fragen heißt
+                    # nur, je Thema erneut durch alle Wiederholversuche zu laufen.
+                    dienst_aufgegeben = True
+                    log.warning("Nach %d Fehlversuchen in Folge: restliche Themen "
+                                "heuristisch.", fehlerserie)
+                    ergebnis.materialluecken.append(Materialluecke(
+                        thema_id="", art="schweigen",
+                        beschreibung=f"LLM-Dienst nach {fehlerserie} Fehlversuchen in "
+                                     "Folge aufgegeben — die übrigen Themen wurden "
+                                     "heuristisch erzeugt. Für volle Qualität "
+                                     "`lernpaket generieren` später wiederholen."))
+                continue
+            fehlerserie = 0
             self._uebernehme(thema, chunks, roh, ergebnis)
         for frage in ergebnis.fragen:
             if frage.thema_id and frage.format == zielformat:

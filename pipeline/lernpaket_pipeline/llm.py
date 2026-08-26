@@ -41,12 +41,18 @@ GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 COPILOT_URL = "https://models.github.ai/inference"
 OLLAMA_URL = "http://localhost:11434"
 
+# Versuche je Anfrage bei Rate-Limit/Serverfehler. Die Aufbereitung läuft
+# unbeaufsichtigt und einmalig — ein 503 des Anbieters ist typischerweise nach
+# ein bis zwei Minuten vorbei, und so lange zu warten ist allemal billiger, als
+# das Thema heuristisch abzufrühstücken. Backoff: 4, 8, 16, 32, 64 Sekunden.
+VERSUCHE = 6
+
 
 class ReasoningLLM(Protocol):
     def frage(self, system: str, prompt: str, max_tokens: int = 4096) -> str: ...
 
 
-def _post_json(url: str, daten: dict, headers: dict, versuche: int = 4) -> dict:
+def _post_json(url: str, daten: dict, headers: dict, versuche: int = VERSUCHE) -> dict:
     """POST mit Backoff bei Rate-Limit/Serverfehlern (Free-Tier-Kontingente)."""
     anfrage = urllib.request.Request(
         url, data=json.dumps(daten).encode("utf-8"),
