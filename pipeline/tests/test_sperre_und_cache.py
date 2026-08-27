@@ -4,6 +4,7 @@ Beides zielt auf den semesterbegleitenden Ablauf: nach und nach kommen
 Vorlesungen dazu, der Studienbrief bleibt derselbe.
 """
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -151,7 +152,12 @@ def test_generierungs_cache_ueberlebt_den_prozess(modul_dir):
 
         def frage(self, system, prompt, max_tokens=4096):
             self.aufrufe += 1
-            return ('{"lehrbloecke": [], "fragen": [], "materialluecken": []}')
+            # Erste Chunk-ID aus dem Prompt ("[c-1 | studienbrief S. 1]"), damit
+            # das Ergebnis den Beleg-Vertrag erfüllt und nicht leer bleibt.
+            chunk_id = re.search(r"\[([^ |]+) \|", prompt).group(1)
+            return ('{"lehrbloecke": [{"tiefe": "auffrischung", '
+                    '"inhalt_markdown": "Inhalt", "chunk_ids": ["%s"]}], '
+                    '"fragen": [], "materialluecken": []}' % chunk_id)
 
     extraktion = extrahiere_material(modul_dir, mit_diagrammen=False)
     cache = modul_dir / EXTRAKTIONS_ORDNER / GENERIERUNGS_CACHE

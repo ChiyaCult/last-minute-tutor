@@ -213,6 +213,11 @@ class HeuristischerGenerator:
 # lokal (Ollama mit LERNPAKET_OLLAMA_CTX=32768).
 MAX_PROMPT_CHUNKS = 30
 
+# So viele dauerhafte Fehler in Folge gelten als Konfigurationsproblem statt als
+# Materialproblem. Anlass: ein falscher Ollama-Modellname ließ alle 19 Themen mit
+# HTTP 404 scheitern, und die Pipeline schrieb ein leeres Paket mit Exit-Code 0.
+MAX_DAUERFEHLER = 3
+
 # Quoten je Quelle, damit der Studienbrief den Prompt nicht monopolisiert.
 # Gemessener Anlass: ohne Quoten landeten 8 von 14 Themen mit ausschließlich
 # Studienbrief-Chunks im Prompt, obwohl ihnen bis zu 228 Folien-Chunks
@@ -315,6 +320,7 @@ class LLMGenerator:
         """
         ergebnis = GenerierungsErgebnis()
         klausur = klausur_vokabular(zuordnung)
+        dauerfehler = 0
         for nummer, thema in enumerate(themen, start=1):
             alle_chunks = zuordnung.get(thema.id, [])
             # Nur das Gezeigte darf belegt werden: sonst nimmt der Vertrag eine
@@ -342,6 +348,20 @@ class LLMGenerator:
                     ) from fehler
                 # Dauerhafter Fehler (Anfrage zu groß, Modell weg): Wiederholen
                 # hilft nicht, also markieren und mit dem nächsten Thema weiter.
+                dauerfehler += 1
+                if dauerfehler >= MAX_DAUERFEHLER:
+                    # Dreimal derselbe dauerhafte Fehler heißt: nicht das
+                    # Material ist schuld, sondern die Konfiguration (Modellname
+                    # falsch, Anfrage grundsätzlich abgelehnt). Weiterzumachen
+                    # produziert ein leeres Paket, das später aussieht wie ein
+                    # vollwertiges — genau das soll nicht passieren.
+                    raise LLMDienstNichtVerfuegbar(
+                        f"LLM-Aufruf schlägt dauerhaft fehl ({dauerfehler}× in Folge, "
+                        f"zuletzt bei Thema {nummer} von {len(themen)} "
+                        f"('{thema.titel}')): {fehler}. Das deutet auf die "
+                        "Konfiguration hin, nicht auf das Material — Modellname "
+                        "und Anbieter prüfen. Es wurde kein Paket geschrieben."
+                    ) from fehler
                 log.warning("LLM-Aufruf für Thema '%s' dauerhaft fehlgeschlagen: %s",
                             thema.titel, fehler)
                 ergebnis.materialluecken.append(Materialluecke(
@@ -350,12 +370,21 @@ class LLMGenerator:
                                  f"({fehler}) — für dieses Thema fehlen Lehrblöcke "
                                  "und Fragen im Paket."))
                 continue
+            dauerfehler = 0
             self._uebernehme(thema, chunks, roh, ergebnis)
         for frage in ergebnis.fragen:
             if frage.thema_id and frage.format == zielformat:
                 # eine Diagnosefrage pro Thema
                 if not any(f.diagnose and f.thema_id == frage.thema_id for f in ergebnis.fragen):
                     frage.diagnose = True
+        # Letzte Sicherung: Ein Paket ohne einen einzigen Lehrblock und ohne eine
+        # einzige Frage ist kein Lernpaket. Lieber laut abbrechen als etwas
+        # schreiben, das erst drei Tage vor der Klausur als leer auffällt.
+        if themen and not ergebnis.lehrbloecke and not ergebnis.fragen:
+            raise LLMDienstNichtVerfuegbar(
+                f"Die Generierung lieferte für keines der {len(themen)} Themen "
+                "einen Lehrblock oder eine Frage. Es wurde kein Paket geschrieben; "
+                "die Materiallücken nennen den Grund je Thema.")
         return ergebnis
 
     def _prompt(self, thema: Thema, chunks: List[Chunk], zielformat: str) -> str:

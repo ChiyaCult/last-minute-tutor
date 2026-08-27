@@ -226,10 +226,57 @@ def test_belege_nur_auf_gezeigte_chunks(monkeypatch):
     class ErfindetBeleg:
         def frage(self, system, prompt, max_tokens=4096):
             assert unsichtbar not in prompt
+            sichtbar = viele[0].id
             return ('{"lehrbloecke": [{"tiefe": "auffrischung", "inhalt_markdown": "X", '
-                    f'"chunk_ids": ["{unsichtbar}"]}}], "fragen": [], "materialluecken": []}}')
+                    f'"chunk_ids": ["{unsichtbar}"]}}], '
+                    '"fragen": [{"format": "freitext", "frage_markdown": "F", '
+                    f'"antwort": "A", "erklaerung_markdown": "E", "chunk_ids": ["{sichtbar}"]}}], '
+                    '"materialluecken": []}')
 
     thema = Thema(id="t-01", titel="Beispiel")
     ergebnis = LLMGenerator(ErfindetBeleg()).erzeuge([thema], {"t-01": viele}, "mc")
-    assert ergebnis.lehrbloecke == []
+    assert ergebnis.lehrbloecke == [], "Beleg auf nie gezeigten Chunk muss fallen"
+    assert len(ergebnis.fragen) == 1, "der gültige Beleg daneben bleibt erhalten"
     assert ergebnis.materialluecken
+
+
+def test_dauerfehlerserie_bricht_ab_statt_leeres_paket_zu_schreiben():
+    """Falscher Modellname ließ alle 19 Themen mit 404 scheitern — und die
+    Pipeline schrieb ein leeres Paket mit Exit-Code 0."""
+    class ImmerVierNullVier:
+        def frage(self, system, prompt, max_tokens=4096):
+            raise urllib.error.HTTPError("u", 404, "Not Found", {}, None)
+
+    themen = [Thema(id=f"t-{i:02d}", titel=f"Thema {i}") for i in range(1, 8)]
+    zuordnung = {t.id: _chunks("studienbrief", 2) for t in themen}
+    with pytest.raises(LLMDienstNichtVerfuegbar, match="Konfiguration"):
+        LLMGenerator(ImmerVierNullVier()).erzeuge(themen, zuordnung, "mc")
+
+
+def test_vereinzelter_dauerfehler_laeuft_weiter():
+    """Ein einzelnes kaputtes Thema darf den Lauf nicht kippen."""
+    class NurEinsKaputt:
+        def frage(self, system, prompt, max_tokens=4096):
+            if "Thema 2" in prompt:
+                raise urllib.error.HTTPError("u", 400, "Bad Request", {}, None)
+            chunk_id = prompt.split("[", 1)[1].split(" |", 1)[0]
+            return ('{"lehrbloecke": [{"tiefe": "auffrischung", "inhalt_markdown": "X", '
+                    f'"chunk_ids": ["{chunk_id}"]}}], "fragen": [], "materialluecken": []}}')
+
+    themen = [Thema(id=f"t-{i:02d}", titel=f"Thema {i}") for i in range(1, 5)]
+    zuordnung = {t.id: _chunks("studienbrief", 2) for t in themen}
+    ergebnis = LLMGenerator(NurEinsKaputt()).erzeuge(themen, zuordnung, "mc")
+    assert len(ergebnis.lehrbloecke) == 3
+    assert any("fehlgeschlagen" in m.beschreibung for m in ergebnis.materialluecken)
+
+
+def test_durchgehend_leere_antworten_gelten_nicht_als_paket():
+    """Erfolgreiche Aufrufe ohne verwertbares Ergebnis sind auch kein Lernpaket."""
+    class LiefertNichts:
+        def frage(self, system, prompt, max_tokens=4096):
+            return '{"lehrbloecke": [], "fragen": [], "materialluecken": []}'
+
+    themen = [Thema(id="t-01", titel="Thema 1")]
+    with pytest.raises(LLMDienstNichtVerfuegbar, match="keines"):
+        LLMGenerator(LiefertNichts()).erzeuge(
+            themen, {"t-01": _chunks("studienbrief", 2)}, "mc")
