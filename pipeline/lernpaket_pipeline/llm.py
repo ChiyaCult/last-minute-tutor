@@ -147,14 +147,29 @@ class GecachterLLM:
         return antwort
 
 
-def _post_json(url: str, daten: dict, headers: dict, versuche: int = VERSUCHE) -> dict:
+# Zeit, die eine einzelne Anfrage brauchen darf. Für Remote-Anbieter ist eine
+# Antwort nach 5 Minuten praktisch tot. Lokale Inferenz ist eine andere Welt:
+# ein 27B auf einem M3 braucht für einen 9k-Token-Prompt gut 400 Sekunden
+# (gemessen), und ein Timeout gilt als vorübergehender Fehler — der Lauf bräche
+# also beim ersten Thema ab, statt einfach zu warten.
+ZEITLIMIT = 300
+ZEITLIMIT_LOKAL = 3600
+
+
+def _zeitlimit(name: str, standard: int) -> int:
+    roh = os.environ.get(name, "")
+    return int(roh) if roh.isdigit() and int(roh) > 0 else standard
+
+
+def _post_json(url: str, daten: dict, headers: dict, versuche: int = VERSUCHE,
+               zeitlimit: int = ZEITLIMIT) -> dict:
     """POST mit Backoff bei Rate-Limit/Serverfehlern (Free-Tier-Kontingente)."""
     anfrage = urllib.request.Request(
         url, data=json.dumps(daten).encode("utf-8"),
         headers={"content-type": "application/json", **headers})
     for i in range(versuche):
         try:
-            with urllib.request.urlopen(anfrage, timeout=300) as antwort:
+            with urllib.request.urlopen(anfrage, timeout=zeitlimit) as antwort:
                 return json.loads(antwort.read().decode("utf-8"))
         except urllib.error.HTTPError as fehler:
             if fehler.code not in VORUEBERGEHENDE_CODES or i == versuche - 1:
@@ -247,7 +262,7 @@ class OllamaLLM:
             "options": {"num_ctx": _ollama_ctx(), "num_predict": max_tokens},
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": prompt}],
-        }, {})
+        }, {}, zeitlimit=_zeitlimit("LERNPAKET_OLLAMA_TIMEOUT", ZEITLIMIT_LOKAL))
         return koerper.get("message", {}).get("content") or ""
 
 

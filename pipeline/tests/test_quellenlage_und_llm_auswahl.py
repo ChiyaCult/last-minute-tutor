@@ -357,9 +357,10 @@ def _ollama_anfrage(monkeypatch, **umgebung):
     """Fängt den Anfragekörper ab, den OllamaLLM absetzen würde."""
     gesehen = {}
 
-    def falsches_post(url, daten, headers, versuche=6):
+    def falsches_post(url, daten, headers, versuche=6, zeitlimit=300):
         gesehen["url"] = url
         gesehen["daten"] = daten
+        gesehen["zeitlimit"] = zeitlimit
         return {"message": {"content": "{}"}}
 
     monkeypatch.setattr("lernpaket_pipeline.llm._post_json", falsches_post)
@@ -404,3 +405,15 @@ def test_abgeschnittener_denkblock_gilt_als_unauswertbar():
     """Token-Budget mitten im Denken alle: lieber Materiallücke als Denktext."""
     with pytest.raises(ValueError):
         extrahiere_json('<think>Also, der Chunk {c-1} sagt folgendes')
+
+
+def test_ollama_bekommt_grosszuegiges_zeitlimit(saubere_umgebung):
+    """Ein 27B auf einem M3 braucht für ein Thema mehrere Minuten. Mit dem
+    Remote-Zeitlimit von 300 s liefe jeder lokale Lauf in einen TimeoutError —
+    der gilt als vorübergehend und bricht den ganzen Lauf ab."""
+    assert _ollama_anfrage(saubere_umgebung)["zeitlimit"] == 3600
+
+
+def test_ollama_zeitlimit_ueber_umgebung(saubere_umgebung):
+    gesehen = _ollama_anfrage(saubere_umgebung, LERNPAKET_OLLAMA_TIMEOUT="900")
+    assert gesehen["zeitlimit"] == 900
