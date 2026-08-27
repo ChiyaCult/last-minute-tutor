@@ -7,7 +7,11 @@ import pytest
 from lernpaket_pipeline.chunks import chunks_aus_transkript
 from lernpaket_pipeline.extraktion.audio import FasterWhisperTranskribierer
 from lernpaket_pipeline.pipeline import erzeuge_lernpaket
-from lernpaket_pipeline.relevanz import finde_relevanz_marker
+from lernpaket_pipeline.relevanz import (finde_klausuraufgaben,
+                                        finde_relevanz_marker,
+                                        gewichte_themen,
+                                        ordne_aufgaben_per_llm)
+from lernpaket_pipeline.vertrag import Chunk, Thema
 
 from .conftest import FakeTranskribierer
 
@@ -155,3 +159,101 @@ def test_redefuellsel_wird_nicht_zum_thema():
     assert "bedeutet" not in neue and "nämlich" not in neue, neue
     assert "punkte" not in neue, neue
     assert "hammingdistanz" in neue, neue
+
+
+# --- Klausurpunkte als Relevanzsignal ------------------------------------
+
+ALTKLAUSUR_TEXT = (
+    "Aufgabe 1: EE/R-Modellierung\n1:\nmax. 52\n"
+    "Aufgabe 1.1: (min, max)-Notation\n1.1:\nmax. 11\n"
+    "a) Tragen Sie die Kardinalitäten ein:\n/ 4\n"
+    "Aufgabe 2: Structured Query Language\n2:\nmax. 48\n"
+)
+
+
+def _altklausur_chunk(text=ALTKLAUSUR_TEXT):
+    return Chunk(id="c-ak-1", quelle="altklausur", position="S. 3", text=text)
+
+
+def test_punkte_gehoeren_zur_eigenen_unteraufgabe():
+    """Ohne Rückwärtsreferenz erbt 1.1 die 52 Punkte der Oberaufgabe 1."""
+    aufgaben = {a.nummer: a for a in finde_klausuraufgaben([_altklausur_chunk()])}
+    assert aufgaben["1"].punkte == 52
+    assert aufgaben["1.1"].punkte == 11
+    assert aufgaben["1.1"].titel == "(min, max)-Notation"
+
+
+def test_korrekturkaestchen_sind_keine_aufgabenpunkte():
+    """Die verstreuten „/ 4“ markieren Teilfragen, nicht das Aufgabengewicht."""
+    assert all(a.punkte != 4 for a in finde_klausuraufgaben([_altklausur_chunk()]))
+
+
+def test_ohne_altklausur_keine_punkte():
+    chunk = Chunk(id="c-sb-1", quelle="studienbrief", position="S. 1",
+                  text=ALTKLAUSUR_TEXT)
+    assert finde_klausuraufgaben([chunk]) == []
+
+
+def test_klausurpunkte_heben_die_relevanz():
+    themen = [Thema(id="t-01", titel="EE/R-Modellierung"),
+              Thema(id="t-02", titel="Randthema ohne Klausurbezug")]
+    gewichte_themen(themen, [], [_altklausur_chunk()])
+    assert themen[0].relevanz > themen[1].relevanz
+    assert "klausur-punkte" in themen[0].relevanzsignale
+    assert "klausur-punkte" not in themen[1].relevanzsignale
+    # Das Signal ist belegt wie jedes andere.
+    assert any(b.quelle == "altklausur" for b in themen[0].belege)
+
+
+def test_kompositum_im_thementitel_wird_getroffen():
+    """„EE/R-Modellierung“ muss „…-Modell“ finden — reine Wortgleichheit nicht."""
+    themen = [Thema(id="t-01", titel="Das Entity-Relationship-Modell")]
+    gewichte_themen(themen, [], [_altklausur_chunk()])
+    assert "klausur-punkte" in themen[0].relevanzsignale
+
+
+def test_oberaufgabe_deckt_teilthema_ab():
+    """Aufgabentitel und Thementitel sind verschieden lang — beide Richtungen zählen."""
+    chunk = _altklausur_chunk(
+        "Aufgabe 3: Funktionale Abhängigkeiten und Normalisierung\n3:\nmax. 28\n")
+    themen = [Thema(id="t-01", titel="Normalisierung")]
+    gewichte_themen(themen, [], [chunk])
+    assert "klausur-punkte" in themen[0].relevanzsignale
+
+
+def test_llm_ordnet_zu_was_wortvergleich_nicht_schafft():
+    """„Structured Query Language“ und „Die Datenbanksprache SQL“ teilen kein Wort."""
+    themen = [Thema(id="t-01", titel="Die Datenbanksprache SQL")]
+    aufgaben = [a for a in finde_klausuraufgaben([_altklausur_chunk()])
+                if a.titel == "Structured Query Language"]
+
+    class FakeLLM:
+        def frage(self, system, prompt, max_tokens=4096):
+            return '{"0": "t-01"}'
+
+    zuordnung = ordne_aufgaben_per_llm(themen, aufgaben, FakeLLM())
+    assert [a.punkte for a in zuordnung["t-01"]] == [48]
+
+
+def test_llm_ausfall_faellt_auf_wortvergleich_zurueck():
+    """Das Punktesignal ist ein Bonus — sein Ausfall darf den Lauf nicht kippen."""
+    themen = [Thema(id="t-01", titel="EE/R-Modellierung")]
+    aufgaben = finde_klausuraufgaben([_altklausur_chunk()])
+
+    class KaputtesLLM:
+        def frage(self, system, prompt, max_tokens=4096):
+            raise RuntimeError("Anbieter weg")
+
+    assert "t-01" in ordne_aufgaben_per_llm(themen, aufgaben, KaputtesLLM())
+
+
+def test_erfundene_thema_ids_des_llm_werden_verworfen():
+    themen = [Thema(id="t-01", titel="Die Datenbanksprache SQL")]
+    aufgaben = finde_klausuraufgaben([_altklausur_chunk()])
+
+    class SchwindelLLM:
+        def frage(self, system, prompt, max_tokens=4096):
+            return '{"0": "t-99"}'
+
+    # Keine gültige Zuordnung -> lexikalischer Rückfall, nicht die erfundene ID.
+    assert "t-99" not in ordne_aufgaben_per_llm(themen, aufgaben, SchwindelLLM())

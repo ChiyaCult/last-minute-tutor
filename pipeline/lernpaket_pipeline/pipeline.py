@@ -706,12 +706,11 @@ def generiere_lernpaket(
         themen, [c for c in chunks if c.quelle in ("vorlesung", "folie")])
     treffer = finde_relevanz_marker(chunks)
     optional_chunks = [c for c in chunks if c.quelle in ("altklausur", "uebung")]
-    gewichte_themen(themen, treffer, optional_chunks)
 
-    zielformat = erkenne_zielformat(chunks)
-    log.info("Generierung: %d Thema/Themen, Zielformat-Vorschlag '%s'",
-             len(themen), zielformat.vorschlag)
-
+    # Das LLM wird schon hier gebaut (nicht erst für den Generator): die
+    # Gewichtung ordnet Klausuraufgaben ihren Themen zu, und daran scheitert
+    # Wortvergleich regelmäßig ("Structured Query Language" vs. "Die
+    # Datenbanksprache SQL"). Ein Aufruf je Modul, gecacht wie alle anderen.
     llm = None
     if generator is None:
         llm = hole_llm(llm_anbieter, llm_modell)
@@ -722,6 +721,12 @@ def generiere_lernpaket(
             generator = LLMGenerator(llm)
         else:
             generator = HeuristischerGenerator()
+
+    gewichte_themen(themen, treffer, optional_chunks, llm)
+
+    zielformat = erkenne_zielformat(chunks)
+    log.info("Generierung: %d Thema/Themen, Zielformat-Vorschlag '%s'",
+             len(themen), zielformat.vorschlag)
     log.info("Generator: %s", type(generator).__name__)
     zuordnung = ordne_chunks_zu(themen, chunks)
     # Foliensatz-Titel stammen aus der Folien-Kopfzeile und tragen bei einem
