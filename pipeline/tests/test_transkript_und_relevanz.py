@@ -257,3 +257,33 @@ def test_erfundene_thema_ids_des_llm_werden_verworfen():
 
     # Keine gültige Zuordnung -> lexikalischer Rückfall, nicht die erfundene ID.
     assert "t-99" not in ordne_aufgaben_per_llm(themen, aufgaben, SchwindelLLM())
+
+
+FAU_TEXT = (
+    "Aufgabe 1 (Informationsgehalt und Codierung) (10 Punkte)\n"
+    "a) Vervollständigen Sie den Huffman-Code. (3 Punkte)\n"
+    "Aufgabe 4 (Flipflops und Automaten) (16 Punkte)\n"
+)
+
+
+def test_zweites_klausurlayout_wird_erkannt():
+    """Jeder Lehrstuhl setzt anders: Titel und Punkte je in Klammern."""
+    aufgaben = {a.nummer: a for a in
+                finde_klausuraufgaben([_altklausur_chunk(FAU_TEXT)])}
+    assert aufgaben["1"].titel == "Informationsgehalt und Codierung"
+    assert aufgaben["1"].punkte == 10
+    assert aufgaben["4"].punkte == 16
+
+
+def test_teilpunkte_einer_teilfrage_sind_keine_aufgabe():
+    """„(3 Punkte)“ hinter a) gehört zur Teilfrage, nicht zu einer Aufgabe."""
+    assert all(a.punkte != 3 for a in
+               finde_klausuraufgaben([_altklausur_chunk(FAU_TEXT)]))
+
+
+def test_beide_layouts_nebeneinander():
+    aufgaben = finde_klausuraufgaben([
+        _altklausur_chunk(ALTKLAUSUR_TEXT),
+        Chunk(id="c-ak-2", quelle="altklausur", position="S. 2", text=FAU_TEXT),
+    ])
+    assert {a.punkte for a in aufgaben} >= {52, 11, 48, 10, 16}

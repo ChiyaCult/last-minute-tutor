@@ -72,15 +72,25 @@ class Klausuraufgabe:
     position: str
 
 
-# Altklausuren führen ihre Aufgaben als Block:
-#     Aufgabe 1.1: (min, max)-Notation
-#     1.1:
-#     max. 11
-# Die Rückwärtsreferenz auf die Nummer bindet die Punktzahl an genau ihre
-# Aufgabe — sonst erben Unteraufgaben die Punkte der Oberaufgabe. Die im Text
-# verstreuten „/ 4“ sind Korrekturkästchen je Teilfrage, keine Aufgabenpunkte.
-KLAUSURAUFGABE_RE = re.compile(
-    r"Aufgabe\s+(\d+(?:\.\d+)*)\s*:\s*(.+?)\s*\n\1\s*:\s*\n\s*max\.\s*(\d+)")
+# Jeder Lehrstuhl setzt seine Klausuren anders. Ein Muster je Layout, alle mit
+# derselben Gruppenfolge (Nummer, Titel, Punkte). Neue Module bringen
+# absehbar neue Layouts mit — kommt eines dazu, das hier nicht greift, liefert
+# `ordne_aufgaben_per_llm` immer noch nichts, weil schon die Extraktion leer
+# bleibt. Dann ist ein weiteres Muster fällig (oder das Auslesen wandert ganz
+# ins LLM).
+KLAUSURAUFGABE_MUSTER = (
+    # FernUni: Titel hinter dem Doppelpunkt, Punkte in eigener Zeile.
+    #     Aufgabe 1.1: (min, max)-Notation
+    #     1.1:
+    #     max. 11
+    # Die Rückwärtsreferenz auf die Nummer bindet die Punktzahl an genau ihre
+    # Aufgabe — sonst erben Unteraufgaben die Punkte der Oberaufgabe. Die im
+    # Text verstreuten „/ 4“ sind Korrekturkästchen, keine Aufgabenpunkte.
+    re.compile(r"Aufgabe\s+(\d+(?:\.\d+)*)\s*:\s*(.+?)\s*\n\1\s*:\s*\n\s*max\.\s*(\d+)"),
+    # FAU Erlangen: Titel und Punkte je in Klammern, alles auf einer Zeile.
+    #     Aufgabe 1 (Informationsgehalt und Codierung) (10 Punkte)
+    re.compile(r"Aufgabe\s+(\d+(?:\.\d+)*)\s*\(([^)]{3,80})\)\s*\((\d{1,3})\s*Punkte?\)"),
+)
 
 
 def _schluesselwoerter(text: str) -> List[str]:
@@ -97,12 +107,17 @@ def finde_klausuraufgaben(optional_chunks: Iterable[Chunk]) -> List[Klausuraufga
     Termüberlappung zurück.
     """
     aufgaben: List[Klausuraufgabe] = []
+    gesehen: set = set()
     for chunk in optional_chunks:
         if chunk.quelle not in ("altklausur", "uebung"):
             continue
-        for nummer, titel, punkte in KLAUSURAUFGABE_RE.findall(chunk.text):
-            titel = " ".join(titel.split())
-            if titel:
+        for muster in KLAUSURAUFGABE_MUSTER:
+            for nummer, titel, punkte in muster.findall(chunk.text):
+                titel = " ".join(titel.split())
+                schluessel = (chunk.id, nummer, titel)
+                if not titel or schluessel in gesehen:
+                    continue
+                gesehen.add(schluessel)
                 aufgaben.append(Klausuraufgabe(
                     nummer=nummer, titel=titel, punkte=int(punkte),
                     chunk_id=chunk.id, position=chunk.position))
