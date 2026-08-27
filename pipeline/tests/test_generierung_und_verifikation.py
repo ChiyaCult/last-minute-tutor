@@ -4,7 +4,10 @@ import urllib.error
 
 import pytest
 
-from lernpaket_pipeline.generierung import HeuristischerGenerator, LLMGenerator
+from lernpaket_pipeline.generierung import (MAX_PROMPT_CHUNKS,
+                                           HeuristischerGenerator,
+                                           LLMGenerator,
+                                           waehle_prompt_chunks)
 from lernpaket_pipeline.llm import GecachterLLM, LLMDienstNichtVerfuegbar
 from lernpaket_pipeline.pipeline import erzeuge_lernpaket
 from lernpaket_pipeline.verifikation import verifiziere
@@ -175,3 +178,58 @@ def test_cache_greift_nicht_bei_geaendertem_material(tmp_path):
     zuordnung["t-01"][0].text = "Ganz anderer Inhalt zum selben Thema, mit Sätzen. " * 6
     LLMGenerator(gecacht).erzeuge(themen, zuordnung, "freitext")
     assert llm.aufrufe == 2, "geänderter Prompt muss neu angefragt werden"
+
+
+# --- Chunk-Auswahl für den Prompt ----------------------------------------
+
+def _chunks(quelle, anzahl, text="Ein Satz über das Thema Beispiel.", start=0):
+    return [Chunk(id=f"c-{quelle}-{i}", quelle=quelle, position=f"S. {i}",
+                  text=text) for i in range(start, start + anzahl)]
+
+
+def test_wenig_material_kommt_vollstaendig_in_den_prompt():
+    chunks = _chunks("studienbrief", 5)
+    assert waehle_prompt_chunks(Thema(id="t-01", titel="Beispiel"), chunks, {}) == chunks
+
+
+def test_studienbrief_verdraengt_die_anderen_quellen_nicht():
+    """Der eigentliche Fehler: Nicht-Studienbrief wird hinten angehängt und
+    fiel dem simplen Abschneiden immer zum Opfer."""
+    chunks = _chunks("studienbrief", 100) + _chunks("folie", 40) + _chunks("vorlesung", 40)
+    gewaehlt = waehle_prompt_chunks(Thema(id="t-01", titel="Beispiel"), chunks, {})
+    quellen = {c.quelle for c in gewaehlt}
+    assert len(gewaehlt) == MAX_PROMPT_CHUNKS
+    assert quellen == {"studienbrief", "folie", "vorlesung"}
+
+
+def test_auswahl_behaelt_dokumentreihenfolge():
+    chunks = _chunks("studienbrief", 50)
+    gewaehlt = waehle_prompt_chunks(Thema(id="t-01", titel="Beispiel"), chunks, {})
+    reihenfolge = {c.id: i for i, c in enumerate(chunks)}
+    assert [reihenfolge[c.id] for c in gewaehlt] == sorted(reihenfolge[c.id] for c in gewaehlt)
+
+
+def test_muendlicher_marker_schlaegt_irrelevantes_material():
+    füller = _chunks("vorlesung", 60, text="Nebensächliches Geplauder ohne Bezug.")
+    markiert = Chunk(id="c-wichtig", quelle="vorlesung", position="Min. 12",
+                     text="Das ist klausurrelevant und kommt in der Klausur.")
+    gewaehlt = waehle_prompt_chunks(Thema(id="t-01", titel="Beispiel"),
+                                    füller + [markiert], {})
+    assert any(c.id == "c-wichtig" for c in gewaehlt)
+
+
+def test_belege_nur_auf_gezeigte_chunks(monkeypatch):
+    """Das Modell darf keine chunk_id belegen, die nie im Prompt stand."""
+    viele = _chunks("studienbrief", 60)
+    unsichtbar = viele[-1].id
+
+    class ErfindetBeleg:
+        def frage(self, system, prompt, max_tokens=4096):
+            assert unsichtbar not in prompt
+            return ('{"lehrbloecke": [{"tiefe": "auffrischung", "inhalt_markdown": "X", '
+                    f'"chunk_ids": ["{unsichtbar}"]}}], "fragen": [], "materialluecken": []}}')
+
+    thema = Thema(id="t-01", titel="Beispiel")
+    ergebnis = LLMGenerator(ErfindetBeleg()).erzeuge([thema], {"t-01": viele}, "mc")
+    assert ergebnis.lehrbloecke == []
+    assert ergebnis.materialluecken

@@ -21,7 +21,7 @@ from typing import Dict, List, Optional, Protocol, Tuple
 from .extraktion.formeln import ist_formelzeile
 from .llm import (LLMDienstNichtVerfuegbar, ReasoningLLM, extrahiere_json,
                   ist_voruebergehend)
-from .relevanz import _WORT_RE
+from .relevanz import _MARKER_RE, _WORT_RE
 from .vertrag import Beleg, Chunk, Frage, Lehrblock, Materialluecke, Thema
 
 ALLE_FORMATE = ("mc", "rechnen", "freitext", "beweis")
@@ -208,6 +208,88 @@ class HeuristischerGenerator:
         return fragen
 
 
+# So viele Chunks gehen je Thema in den Generierungs-Prompt. 30 × 1400 Zeichen
+# sind rund 14k Token — passt in jedes hier vorgesehene Kontextfenster, auch
+# lokal (Ollama mit LERNPAKET_OLLAMA_CTX=32768).
+MAX_PROMPT_CHUNKS = 30
+
+# Quoten je Quelle, damit der Studienbrief den Prompt nicht monopolisiert.
+# Gemessener Anlass: ohne Quoten landeten 8 von 14 Themen mit ausschließlich
+# Studienbrief-Chunks im Prompt, obwohl ihnen bis zu 228 Folien-Chunks
+# zugeordnet waren — `ordne_chunks_zu` hängt Nicht-Studienbrief hinten an, und
+# ein simples Abschneiden erwischte davon nichts.
+PROMPT_QUOTEN = (("studienbrief", 12), ("folie", 8), ("vorlesung", 6),
+                 ("altklausur", 2), ("uebung", 2))
+
+
+def klausur_vokabular(zuordnung: Dict[str, List[Chunk]]) -> Dict[str, int]:
+    """Wortschatz der Altklausuren/Übungen — das schriftliche Relevanzsignal.
+
+    Aus der Zuordnung statt aus allen Chunks, damit der Generator-Vertrag
+    unverändert bleibt.
+    """
+    haeufigkeit: Dict[str, int] = {}
+    gesehen: set = set()
+    for chunks in zuordnung.values():
+        for chunk in chunks:
+            if chunk.quelle not in ("altklausur", "uebung") or chunk.id in gesehen:
+                continue
+            gesehen.add(chunk.id)
+            for wort in set(_WORT_RE.findall(chunk.text.lower())):
+                haeufigkeit[wort] = haeufigkeit.get(wort, 0) + 1
+    return haeufigkeit
+
+
+def _chunk_score(chunk: Chunk, titel_woerter: "set[str]",
+                 klausur: Dict[str, int]) -> float:
+    woerter = {w.lower() for w in _WORT_RE.findall(chunk.text)}
+    score = 3.0 * len(titel_woerter & woerter) / max(len(titel_woerter), 1)
+    if klausur:
+        naehe = sum(klausur.get(w, 0) for w in woerter)
+        score += 2.0 * min(1.0, naehe / 60.0)
+    if _MARKER_RE.search(chunk.text):
+        score += 2.5  # der Professor hat es mündlich als klausurrelevant markiert
+    return score
+
+
+def waehle_prompt_chunks(thema: Thema, chunks: List[Chunk],
+                         klausur: Dict[str, int]) -> List[Chunk]:
+    """Wählt die Chunks für den Prompt: nach Relevanz sortiert, Quellen gemischt.
+
+    Vorher wurden schlicht die ersten Chunks genommen — also Studienbrief in
+    Seitenreihenfolge, weil `ordne_chunks_zu` in dieser Reihenfolge einsammelt.
+    Vorlesungsmarker und Altklausurnähe blieben dabei ungenutzt.
+    """
+    if len(chunks) <= MAX_PROMPT_CHUNKS:
+        return chunks
+    titel_woerter = {w.lower() for w in _WORT_RE.findall(thema.titel)}
+    sortiert = sorted(chunks, key=lambda c: -_chunk_score(c, titel_woerter, klausur))
+
+    gewaehlt: List[Chunk] = []
+    genommen: set = set()
+    for quelle, quote in PROMPT_QUOTEN:
+        for chunk in sortiert:
+            if len(gewaehlt) >= MAX_PROMPT_CHUNKS:
+                break
+            if chunk.quelle == quelle and chunk.id not in genommen:
+                gewaehlt.append(chunk)
+                genommen.add(chunk.id)
+                quote -= 1
+                if quote <= 0:
+                    break
+    # Restplätze (etwa weil eine Quelle im Modul fehlt) nach reinem Score füllen.
+    for chunk in sortiert:
+        if len(gewaehlt) >= MAX_PROMPT_CHUNKS:
+            break
+        if chunk.id not in genommen:
+            gewaehlt.append(chunk)
+            genommen.add(chunk.id)
+    # Dokumentreihenfolge wiederherstellen: zusammenhängender Text liest sich
+    # für das Modell besser als nach Score durchgeschütteltes Material.
+    reihenfolge = {c.id: i for i, c in enumerate(chunks)}
+    return sorted(gewaehlt, key=lambda c: reihenfolge[c.id])
+
+
 _SYSTEM_PROMPT = (
     "Du erzeugst Lernmaterial strikt aus den übergebenen Quell-Chunks. "
     "Treue-Vertrag: Behaupte NUR, was ein Chunk belegt, und gib zu jedem Artefakt "
@@ -232,8 +314,12 @@ class LLMGenerator:
         heruntergestuftes Paket sähe später aus wie ein vollwertiges.
         """
         ergebnis = GenerierungsErgebnis()
+        klausur = klausur_vokabular(zuordnung)
         for nummer, thema in enumerate(themen, start=1):
-            chunks = zuordnung.get(thema.id, [])
+            alle_chunks = zuordnung.get(thema.id, [])
+            # Nur das Gezeigte darf belegt werden: sonst nimmt der Vertrag eine
+            # chunk_id an, die das Modell nie gesehen hat.
+            chunks = waehle_prompt_chunks(thema, alle_chunks, klausur)
             if not chunks:
                 ergebnis.materialluecken.append(Materialluecke(
                     thema_id=thema.id, art="schweigen",
@@ -274,7 +360,7 @@ class LLMGenerator:
 
     def _prompt(self, thema: Thema, chunks: List[Chunk], zielformat: str) -> str:
         chunk_text = "\n\n".join(
-            f"[{c.id} | {c.quelle} {c.position}]\n{c.text}" for c in chunks[:12]
+            f"[{c.id} | {c.quelle} {c.position}]\n{c.text}" for c in chunks
         )
         return (
             f"Thema: {thema.titel}\nZielformat der Klausur: {zielformat}\n\n"
