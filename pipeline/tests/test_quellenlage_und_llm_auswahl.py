@@ -7,7 +7,8 @@ import pytest
 from datetime import datetime, timezone
 
 from lernpaket_pipeline.llm import (AnthropicLLM, GeminiLLM,
-                                    OpenAiKompatibelLLM, hole_llm)
+                                    OllamaLLM, OpenAiKompatibelLLM,
+                                    extrahiere_json, hole_llm)
 from lernpaket_pipeline.pipeline import (erzeuge_lernpaket, extrahiere_material,
                                          finde_quellen, generiere_lernpaket,
                                          lade_extraktion, schreibe_extraktion)
@@ -324,8 +325,9 @@ def test_copilot_ohne_token_schlaegt_laut_fehl(saubere_umgebung):
 def test_ollama_explizit_ohne_schluessel(saubere_umgebung):
     saubere_umgebung.setenv("LERNPAKET_LLM", "ollama")
     llm = hole_llm()
-    assert isinstance(llm, OpenAiKompatibelLLM)
-    assert llm.basis_url.endswith("/v1")
+    assert isinstance(llm, OllamaLLM)
+    # Native Route, nicht /v1: nur die wertet options.num_ctx aus.
+    assert not llm.basis_url.endswith("/v1")
     assert llm.modell == "llama3.1"
 
 
@@ -339,10 +341,66 @@ def test_argumente_schlagen_umgebung(saubere_umgebung):
     saubere_umgebung.setenv("ANTHROPIC_API_KEY", "sk-test")
     saubere_umgebung.setenv("LERNPAKET_LLM", "anthropic")
     llm = hole_llm("ollama", "qwen3")
-    assert isinstance(llm, OpenAiKompatibelLLM)
+    assert isinstance(llm, OllamaLLM)
     assert llm.modell == "qwen3"
 
 
 def test_unbekannter_anbieter_schlaegt_laut_fehl(saubere_umgebung):
     with pytest.raises(RuntimeError, match="Unbekannter LLM-Anbieter"):
         hole_llm("gpt5")
+
+
+# --- Ollama: Kontextfenster und Denkblöcke -------------------------------
+
+
+def _ollama_anfrage(monkeypatch, **umgebung):
+    """Fängt den Anfragekörper ab, den OllamaLLM absetzen würde."""
+    gesehen = {}
+
+    def falsches_post(url, daten, headers, versuche=6):
+        gesehen["url"] = url
+        gesehen["daten"] = daten
+        return {"message": {"content": "{}"}}
+
+    monkeypatch.setattr("lernpaket_pipeline.llm._post_json", falsches_post)
+    for name, wert in umgebung.items():
+        monkeypatch.setenv(name, wert)
+    OllamaLLM("http://localhost:11434", "qwen3.8").frage("sys", "prompt", max_tokens=2048)
+    return gesehen
+
+
+def test_ollama_setzt_kontextfenster(saubere_umgebung):
+    """Ohne num_ctx kürzt Ollama den Prompt stumm auf 4096 Token."""
+    gesehen = _ollama_anfrage(saubere_umgebung)
+    assert gesehen["url"].endswith("/api/chat")
+    assert gesehen["daten"]["options"]["num_ctx"] == 32768
+    assert gesehen["daten"]["options"]["num_predict"] == 2048
+
+
+def test_ollama_kontextfenster_ueber_umgebung(saubere_umgebung):
+    gesehen = _ollama_anfrage(saubere_umgebung, LERNPAKET_OLLAMA_CTX="8192")
+    assert gesehen["daten"]["options"]["num_ctx"] == 8192
+
+
+def test_ollama_kontextfenster_ignoriert_unsinn(saubere_umgebung):
+    gesehen = _ollama_anfrage(saubere_umgebung, LERNPAKET_OLLAMA_CTX="viel")
+    assert gesehen["daten"]["options"]["num_ctx"] == 32768
+
+
+def test_ollama_denkt_standardmaessig_nicht(saubere_umgebung):
+    assert _ollama_anfrage(saubere_umgebung)["daten"]["think"] is False
+    gesehen = _ollama_anfrage(saubere_umgebung, LERNPAKET_OLLAMA_THINK="1")
+    assert gesehen["daten"]["think"] is True
+
+
+def test_json_nach_denkblock_wird_gefunden():
+    """Der Gedankengang enthält oft verworfene JSON-Entwürfe."""
+    roh = ('<think>Vielleicht {"lehrbloecke": []}? Nein, doch anders.</think>\n'
+           '{"lehrbloecke": [{"tiefe": "auffrischung"}]}')
+    assert extrahiere_json(roh)["lehrbloecke"][0]["tiefe"] == "auffrischung"
+
+
+def test_abgeschnittener_denkblock_gilt_als_unauswertbar():
+    """Token-Budget mitten im Denken alle: lieber Materiallücke als Denktext."""
+    with pytest.raises(ValueError):
+        extrahiere_json('<think>Also, der Chunk {c-1} sagt folgendes')

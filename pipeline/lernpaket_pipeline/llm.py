@@ -5,7 +5,7 @@ Vier Anbieter hinter derselben `ReasoningLLM`-Schnittstelle:
 - ``anthropic`` — Anthropic Messages API (``ANTHROPIC_API_KEY``)
 - ``gemini``    — Google Generative Language API (``GEMINI_API_KEY``/``GOOGLE_API_KEY``)
 - ``copilot``   — GitHub Models, OpenAI-kompatibel (``GITHUB_TOKEN``)
-- ``ollama``    — lokaler Ollama-Server, OpenAI-kompatibel (kein Schlüssel)
+- ``ollama``    — lokaler Ollama-Server, native ``/api/chat``-Route (kein Schlüssel)
 
 Auswahl über ``LERNPAKET_LLM`` (bzw. CLI ``--llm``), Modell-Override über
 ``LERNPAKET_LLM_MODELL`` (bzw. ``--llm-modell``). Ohne explizite Wahl werden
@@ -23,6 +23,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -45,6 +46,20 @@ API_URL = "https://api.anthropic.com/v1/messages"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 COPILOT_URL = "https://models.github.ai/inference"
 OLLAMA_URL = "http://localhost:11434"
+
+# Kontextfenster für Ollama. Ohne Angabe nimmt der Server seinen eigenen Default
+# (aktuell 4096 Token) und kürzt längere Prompts KOMMENTARLOS — der Generierungs-
+# Prompt liegt mit bis zu 12 Chunks à 1400 Zeichen darüber, das Modell sähe die
+# hinteren Chunks nie und würde deren chunk_ids trotzdem erfinden.
+# Ollama clamped selbst auf das Maximum des Modells, zu hoch ist also harmlos.
+# Achtung: nur die native /api/chat-Route wertet `options` aus — die OpenAI-
+# kompatible /v1/chat/completions verwirft sie stillschweigend (nachgemessen).
+OLLAMA_CTX = 32768
+
+
+def _ollama_ctx() -> int:
+    roh = os.environ.get("LERNPAKET_OLLAMA_CTX", "")
+    return int(roh) if roh.isdigit() and int(roh) > 0 else OLLAMA_CTX
 
 # Versuche je Anfrage bei Rate-Limit/Serverfehler. Die Aufbereitung läuft
 # unbeaufsichtigt und einmalig — ein 503 des Anbieters ist typischerweise nach
@@ -206,6 +221,36 @@ class OpenAiKompatibelLLM:
         return auswahl[0].get("message", {}).get("content") or ""
 
 
+class OllamaLLM:
+    """Lokaler Ollama-Server über die native ``/api/chat``-Route.
+
+    Nicht die OpenAI-kompatible Route, obwohl die bequemer wäre: nur ``/api/chat``
+    wertet ``options.num_ctx`` aus. Über ``/v1/chat/completions`` bleibt das
+    Kontextfenster bei 4096 Token, und der Prompt wird stumm abgeschnitten.
+
+    ``think`` wird bewusst abgeschaltet: Reasoning-Modelle (Qwen3 & Co.) würden
+    sonst einen Gutteil des Token-Budgets in einen ``<think>``-Block stecken, den
+    hier ohnehin niemand liest. ``LERNPAKET_OLLAMA_THINK=1`` schaltet es an;
+    ``extrahiere_json`` kommt mit beidem zurecht.
+    """
+
+    def __init__(self, basis_url: str, modell: str):
+        self.basis_url = basis_url.rstrip("/")
+        self.modell = modell
+
+    def frage(self, system: str, prompt: str, max_tokens: int = 4096) -> str:  # pragma: no cover - Netzwerk
+        denken = os.environ.get("LERNPAKET_OLLAMA_THINK", "") == "1"
+        koerper = _post_json(f"{self.basis_url}/api/chat", {
+            "model": self.modell,
+            "stream": False,
+            "think": denken,
+            "options": {"num_ctx": _ollama_ctx(), "num_predict": max_tokens},
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": prompt}],
+        }, {})
+        return koerper.get("message", {}).get("content") or ""
+
+
 def _erzeuge_llm(anbieter: str, modell: Optional[str]) -> ReasoningLLM:
     if anbieter == "anthropic":
         return AnthropicLLM(modell=modell)
@@ -219,8 +264,8 @@ def _erzeuge_llm(anbieter: str, modell: Optional[str]) -> ReasoningLLM:
         basis = os.environ.get("LERNPAKET_COPILOT_URL", COPILOT_URL)
         return OpenAiKompatibelLLM(basis, modell or STANDARD_MODELLE["copilot"], token)
     if anbieter == "ollama":
-        basis = os.environ.get("LERNPAKET_OLLAMA_URL", OLLAMA_URL).rstrip("/") + "/v1"
-        return OpenAiKompatibelLLM(
+        basis = os.environ.get("LERNPAKET_OLLAMA_URL", OLLAMA_URL)
+        return OllamaLLM(
             basis, modell or os.environ.get("LERNPAKET_OLLAMA_MODELL",
                                             STANDARD_MODELLE["ollama"]))
     raise RuntimeError(f"Unbekannter LLM-Anbieter '{anbieter}' "
@@ -246,9 +291,24 @@ def hole_llm(anbieter: Optional[str] = None,
     return None
 
 
+# Reasoning-Modelle stellen ihrer Antwort einen Gedankengang voran. Der enthält
+# regelmäßig geschweifte Klammern (verworfene JSON-Entwürfe), auf die die Suche
+# nach dem ersten "{" sonst hereinfällt.
+_DENK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+
+def _ohne_denkblock(text: str) -> str:
+    text = _DENK_RE.sub("", text)
+    # Abgeschnittener Gedankengang (Token-Budget alle): ab hier steht nichts
+    # Verwertbares mehr — lieber sauber als Materiallücke melden als Denktext
+    # als Lehrblock auszuliefern.
+    offen = text.lower().rfind("<think>")
+    return text[:offen] if offen != -1 else text
+
+
 def extrahiere_json(text: str):
     """Zieht das erste JSON-Objekt/-Array aus einer LLM-Antwort (auch aus ```-Fences)."""
-    text = text.strip()
+    text = _ohne_denkblock(text).strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[1] if "\n" in text else text
         if text.endswith("```"):
