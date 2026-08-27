@@ -306,6 +306,20 @@ def hole_llm(anbieter: Optional[str] = None,
     return None
 
 
+# LaTeX und JSON vertragen sich schlecht: "\\overline{Q}" ist gültiges LaTeX,
+# aber "\\o" ist keine gültige JSON-Escape-Sequenz. Da der System-Prompt Formeln
+# als LaTeX verlangt, produzieren Modelle das systematisch — gemessen an einem
+# Thema über Schaltfunktionen. Der Fehler ist ein JSONDecodeError (erbt von
+# ValueError) und würde als stille Materiallücke enden.
+# Repariert wird nur, was JSON nicht als Escape kennt; gültige Sequenzen
+# (\n, \", \uXXXX) bleiben unangetastet.
+_KAPUTTES_ESCAPE_RE = re.compile(r'\\(?!["\\/bfnrtu])')
+
+
+def _repariere_escapes(text: str) -> str:
+    return _KAPUTTES_ESCAPE_RE.sub(r"\\\\", text)
+
+
 # Reasoning-Modelle stellen ihrer Antwort einen Gedankengang voran. Der enthält
 # regelmäßig geschweifte Klammern (verworfene JSON-Entwürfe), auf die die Suche
 # nach dem ersten "{" sonst hereinfällt.
@@ -342,6 +356,12 @@ def extrahiere_json(text: str):
             elif text[i] == ende_zeichen:
                 tiefe -= 1
                 if tiefe == 0:
-                    return json.loads(text[start:i + 1])
+                    roh = text[start:i + 1]
+                    try:
+                        return json.loads(roh)
+                    except json.JSONDecodeError:
+                        # Zweiter Anlauf mit reparierten Backslashes, statt ein
+                        # sonst brauchbares Ergebnis wegen LaTeX zu verwerfen.
+                        return json.loads(_repariere_escapes(roh))
         break
     raise ValueError("Kein JSON in der LLM-Antwort gefunden.")

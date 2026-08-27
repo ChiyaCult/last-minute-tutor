@@ -417,3 +417,20 @@ def test_ollama_bekommt_grosszuegiges_zeitlimit(saubere_umgebung):
 def test_ollama_zeitlimit_ueber_umgebung(saubere_umgebung):
     gesehen = _ollama_anfrage(saubere_umgebung, LERNPAKET_OLLAMA_TIMEOUT="900")
     assert gesehen["zeitlimit"] == 900
+
+
+def test_latex_backslashes_zerlegen_das_json_nicht():
+    """Der System-Prompt verlangt LaTeX; "\\overline" ist kein JSON-Escape."""
+    roh = r'{"lehrbloecke": [{"inhalt_markdown": "Es gilt $\overline{Q} = \frac{a}{b}$"}]}'
+    d = extrahiere_json(roh)
+    assert "overline" in d["lehrbloecke"][0]["inhalt_markdown"]
+
+
+def test_gueltige_escapes_bleiben_erhalten():
+    d = extrahiere_json(r'{"a": "Zeile1\nZeile2", "b": "Er sagte \"hallo\"", "c": "ä"}')
+    assert d["a"] == "Zeile1\nZeile2" and d["b"] == 'Er sagte "hallo"' and d["c"] == "ä"
+
+
+def test_gemischtes_latex_und_echte_escapes():
+    d = extrahiere_json(r'{"t": "Formel $\alpha$\nund \"Zitat\""}')
+    assert "alpha" in d["t"] and "\n" in d["t"] and '"Zitat"' in d["t"]
