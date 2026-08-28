@@ -1,5 +1,7 @@
 #!/usr/bin/env python
-"""A/B-Vergleich zweier lokaler Modelle auf identischen Prompts.
+"""A/B-Vergleich auf identischen Themen-Prompts.
+
+Variiert wahlweise das Modell oder den System-Prompt.
 
     caffeinate -i ./pipeline/.venv/bin/python vergleichslauf.py
 
@@ -14,9 +16,13 @@ Modelle sähen nicht mehr dasselbe Material. Der Antwort-Cache hält die Prompts
 wortgleich fest, also ist er die verlässlichere Quelle.
 
 Umgebung:
-    VERGLEICHSMODELL   Modell B (Standard: Qwen3.8-27B UD-IQ3_XXS)
+    VERGLEICHSMODELL   Modell B (Standard: gleich BASISMODELL)
     BASISMODELL        Modell A, dessen Cache gelesen wird (Standard: qwen3:14b)
+    SYSTEM_B           "v2" für den geschärften System-Prompt (Standard: "v1")
     ANZAHL_THEMEN      wie viele Prompts (Standard: 8)
+
+Genau eine Größe verändern, sonst ist das Ergebnis nicht zuzuordnen: entweder
+VERGLEICHSMODELL oder SYSTEM_B.
 """
 from __future__ import annotations
 
@@ -38,10 +44,27 @@ CACHE = WURZEL / "input" / MODUL / "extraktion" / "generierung"
 BERICHT = WURZEL / "lernpakete-neu" / "vergleich.md"
 ROHDATEN = WURZEL / "lernpakete-neu" / "vergleich.json"
 
-VERGLEICHSMODELL = os.environ.get(
-    "VERGLEICHSMODELL", "hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ3_XXS")
 BASISMODELL = os.environ.get("BASISMODELL", "qwen3:14b")
+VERGLEICHSMODELL = os.environ.get("VERGLEICHSMODELL", BASISMODELL)
 ANZAHL = int(os.environ.get("ANZAHL_THEMEN", "8"))
+
+# Geschärfte Fassung. Angesetzt genau an der Schwäche, die der Modellvergleich
+# gezeigt hat: Distraktoren wie "Sie minimiert NUR die Anzahl der Gatter" oder
+# "Sie IGNORIERT die Boolesche Algebra" lassen sich ausschließen, ohne den Stoff
+# zu kennen. Das größere Modell baute an derselben Stelle plausible Alternativen
+# aus dem Themenfeld. Die Frage ist, ob eine Anweisung dasselbe billiger holt.
+_SYSTEM_V2 = _SYSTEM_PROMPT + (
+    " Für MC-Fragen gilt zusätzlich: Alle Optionen müssen fachlich plausible "
+    "Alternativen aus demselben Themenfeld sein, etwa gleich lang und gleich "
+    "konkret. Keine Option darf sich allein an Wörtern wie 'nur', 'niemals', "
+    "'immer', 'alle' oder 'ignoriert' als falsch erkennen lassen, und keine darf "
+    "erkennbar aus einer anderen Kategorie stammen als die übrigen. Die falschen "
+    "Optionen sollen typische Verwechslungen abbilden, die jemand mit halbem "
+    "Verständnis des Stoffes tatsächlich machen würde. Gib als 'antwort' den "
+    "Buchstaben der richtigen Option an (A, B, C, ...)."
+)
+SYSTEM_B = _SYSTEM_V2 if os.environ.get("SYSTEM_B") == "v2" else _SYSTEM_PROMPT
+SYSTEM_ETIKETT = "v2 (geschärft)" if os.environ.get("SYSTEM_B") == "v2" else "v1"
 
 
 def lies_cache(modell: str) -> list[dict]:
@@ -97,6 +120,39 @@ def auswerten(antwort: str, gueltig: set[str]) -> dict:
     }
 
 
+# Wörter, an denen sich eine Option ausschließen lässt, ohne den Stoff zu kennen.
+AUSSCHLUSSWOERTER = ("nur", "niemals", "immer", "ausschließlich", "ignoriert",
+                     "keine", "alle", "nie", "stets")
+
+
+def distraktor_kennzahlen(mc: list) -> dict:
+    """Zwei messbare Näherungen für "billige" MC-Fragen.
+
+    Kein Ersatz fürs Lesen, aber sie machen den Eindruck überprüfbar:
+    Signalwörter verraten die falsche Option, und eine auffällig längste Option
+    ist die klassische Verräterin für die richtige.
+    """
+    mit_signal = laengste_richtig = auswertbar = 0
+    for f in mc:
+        optionen = [str(o) for o in (f.get("optionen") or [])]
+        if len(optionen) < 2:
+            continue
+        auswertbar += 1
+        antwort = str(f.get("antwort", "")).strip()
+        if any(w in o.lower().split() for o in optionen for w in AUSSCHLUSSWOERTER):
+            mit_signal += 1
+        # Antwort als Buchstabe oder als Volltext — beides kommt vor.
+        if len(antwort) == 1 and antwort.upper().isalpha():
+            i = ord(antwort.upper()) - 65
+            richtig = optionen[i] if 0 <= i < len(optionen) else None
+        else:
+            richtig = next((o for o in optionen if o.strip() == antwort), None)
+        if richtig is not None and len(richtig) == max(len(o) for o in optionen):
+            laengste_richtig += 1
+    return {"auswertbar": auswertbar, "mit_signalwort": mit_signal,
+            "richtige_ist_laengste": laengste_richtig}
+
+
 def mc_text(auswertung: dict) -> str:
     if not auswertung.get("lesbar"):
         return f"_Antwort nicht auswertbar: {auswertung.get('fehler')}_"
@@ -128,10 +184,13 @@ def schreibe_bericht(zeilen_daten: list[dict]) -> None:
     ba, bb = summe("a", "belege_gesamt"), summe("b", "belege_gesamt")
     ga, gb = summe("a", "belege_gueltig"), summe("b", "belege_gueltig")
     sek = [z["sekunden"] for z in zeilen_daten]
+    ka = distraktor_kennzahlen([f for z in zeilen_daten if z["a"]["lesbar"] for f in z["a"]["mc"]])
+    kb = distraktor_kennzahlen([f for z in zeilen_daten if z["b"]["lesbar"] for f in z["b"]["mc"]])
 
     z = [
         f"# Modellvergleich — Modul `{MODUL}`", "",
-        f"**A:** `{BASISMODELL}`  ·  **B:** `{VERGLEICHSMODELL}`", "",
+        f"**A:** `{BASISMODELL}`, System-Prompt v1", "",
+        f"**B:** `{VERGLEICHSMODELL}`, System-Prompt {SYSTEM_ETIKETT}", "",
         "Identische Prompts aus dem Antwort-Cache des A-Laufs, wortgleich gegen B "
         "abgespielt. Gleiche Chunks, gleicher System-Prompt.", "",
         "## Zahlen", "",
@@ -147,10 +206,15 @@ def schreibe_bericht(zeilen_daten: list[dict]) -> None:
         f"| Belege gültig | {ga}/{ba} | {gb}/{bb} |",
         f"| Materiallücken gemeldet | {sum(len(z['a']['materialluecken']) for z in zeilen_daten if z['a']['lesbar'])} "
         f"| {sum(len(z['b']['materialluecken']) for z in zeilen_daten if z['b']['lesbar'])} |",
+        f"| MC mit Ausschluss-Signalwort | {ka['mit_signalwort']}/{ka['auswertbar']} "
+        f"| {kb['mit_signalwort']}/{kb['auswertbar']} |",
+        f"| MC, wo die richtige Option die längste ist | {ka['richtige_ist_laengste']}/{ka['auswertbar']} "
+        f"| {kb['richtige_ist_laengste']}/{kb['auswertbar']} |",
         f"| Sekunden/Thema (B) | ~470 | {sum(sek)/len(sek):.0f} |" if sek else "",
         "",
         "Belege gültig heißt: die chunk_id stand wirklich im Prompt. Alles andere "
-        "verwirft der Beleg-Vertrag.", "",
+        "verwirft der Beleg-Vertrag. Die beiden MC-Zeilen sind Näherungen für "
+        "billig lösbare Fragen — weniger ist besser.", "",
         "## Themen im Einzelnen", "",
     ]
     for eintrag in zeilen_daten:
@@ -188,7 +252,7 @@ def main() -> int:
         gueltig = chunk_ids(eintrag["prompt"])
         t0 = time.time()
         try:
-            antwort_b = llm.frage(_SYSTEM_PROMPT, eintrag["prompt"])
+            antwort_b = llm.frage(SYSTEM_B, eintrag["prompt"])
         except Exception as fehler:
             # Ein Ausfall bei einem Thema darf die bisherigen Ergebnisse nicht
             # mitnehmen — die sind teuer erkauft.
