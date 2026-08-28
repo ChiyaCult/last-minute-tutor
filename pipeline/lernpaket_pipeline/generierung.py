@@ -304,6 +304,36 @@ _SYSTEM_PROMPT = (
 )
 
 
+def _mc_antwort(antwort: str, optionen: Optional[List[str]]) -> Optional[str]:
+    """Normalisiert die MC-Antwort auf den Optionsbuchstaben.
+
+    Der Player vergleicht den geklickten Buchstaben direkt mit `antwort`
+    (player/server/index.js). Der Heuristik-Generator liefert deshalb "A".."D",
+    Modelle schreiben aber überwiegend den vollen Optionstext hin — gemessen in
+    46 von 46 Fällen eines lokalen Laufs. Ohne Normalisierung gilt jede
+    MC-Antwort als falsch, und das Diagnosequiz schließt daraus auf fehlendes
+    Vorwissen im ganzen Thema.
+
+    Gibt None zurück, wenn sich die Antwort keiner Option zuordnen lässt — dann
+    ist die Frage nicht auswertbar und gehört verworfen, nicht geraten.
+    """
+    if not optionen:
+        return None
+    text = (antwort or "").strip()
+    buchstaben = "ABCDEFGH"[: len(optionen)]
+    if len(text) == 1 and text.upper() in buchstaben:
+        return text.upper()
+    # "B)" / "B." / "B:" — häufige Schreibweise, wenn das Modell doch einen
+    # Buchstaben meint.
+    if len(text) > 1 and text[0].upper() in buchstaben and text[1] in ")].: ":
+        return text[0].upper()
+    normiert = " ".join(text.split()).casefold()
+    for i, option in enumerate(optionen):
+        if " ".join(str(option).split()).casefold() == normiert:
+            return buchstaben[i]
+    return None
+
+
 class LLMGenerator:
     """Generierung über das Remote-Spitzenmodell; erzwingt den Beleg-Vertrag."""
 
@@ -439,12 +469,23 @@ class LLMGenerator:
             fmt = fr.get("format", "freitext")
             if fmt not in ALLE_FORMATE or not belege:
                 continue
+            optionen = fr.get("optionen") if fmt == "mc" else None
+            antwort = str(fr.get("antwort", ""))
+            if fmt == "mc":
+                buchstabe = _mc_antwort(antwort, optionen)
+                if buchstabe is None:
+                    ergebnis.materialluecken.append(Materialluecke(
+                        thema_id=thema.id, art="schweigen",
+                        beschreibung=f"MC-Frage zu '{thema.titel}' verworfen: die "
+                                     "angegebene Antwort passt zu keiner Option."))
+                    continue
+                antwort = buchstabe
             zaehler[fmt] = zaehler.get(fmt, 0) + 1
             ergebnis.fragen.append(Frage(
                 id=f"q-{thema.id}-{fmt}-{zaehler[fmt]}", thema_id=thema.id, format=fmt,
                 frage_markdown=fr.get("frage_markdown", ""),
-                optionen=fr.get("optionen") if fmt == "mc" else None,
-                antwort=str(fr.get("antwort", "")),
+                optionen=optionen,
+                antwort=antwort,
                 erklaerung_markdown=fr.get("erklaerung_markdown", ""), belege=belege))
         for ml in daten.get("materialluecken", []):
             ergebnis.materialluecken.append(Materialluecke(

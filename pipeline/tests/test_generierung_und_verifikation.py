@@ -1,5 +1,6 @@
 """Generierungs-Vertrag (Belege, Formate, Materiallücke) und Verifikation
 (Issues #21, #24, #25, #26)."""
+import json
 import urllib.error
 
 import pytest
@@ -280,3 +281,48 @@ def test_durchgehend_leere_antworten_gelten_nicht_als_paket():
     with pytest.raises(LLMDienstNichtVerfuegbar, match="keines"):
         LLMGenerator(LiefertNichts()).erzeuge(
             themen, {"t-01": _chunks("studienbrief", 2)}, "mc")
+
+
+# --- MC-Antworten müssen zum Player passen -------------------------------
+
+def _mc_paket(antwort):
+    class Modell:
+        def frage(self, system, prompt, max_tokens=4096):
+            cid = prompt.split("[", 1)[1].split(" |", 1)[0]
+            return json.dumps({"lehrbloecke": [], "materialluecken": [], "fragen": [
+                {"format": "mc", "frage_markdown": "F?",
+                 "optionen": ["Falsch eins", "Richtig zwei", "Falsch drei"],
+                 "antwort": antwort, "erklaerung_markdown": "E",
+                 "chunk_ids": [cid]},
+                # Zweite, unstrittige Frage, damit das Ergebnis nicht leer ist
+                # und die Leer-Paket-Sicherung nicht anschlägt.
+                {"format": "freitext", "frage_markdown": "Was ist X?",
+                 "antwort": "X ist Y", "erklaerung_markdown": "E",
+                 "chunk_ids": [cid]}]})
+    return LLMGenerator(Modell()).erzeuge(
+        [Thema(id="t-01", titel="T")], {"t-01": _chunks("studienbrief", 2)}, "mc")
+
+
+def test_mc_volltextantwort_wird_zum_buchstaben():
+    """Der Player vergleicht den geklickten Buchstaben mit frage.antwort;
+    Modelle schreiben aber den Optionstext hin (46 von 46 in einem echten Lauf)."""
+    assert _mc_paket("Richtig zwei").fragen[0].antwort == "B"
+
+
+def test_mc_buchstabe_bleibt_buchstabe():
+    assert _mc_paket("B").fragen[0].antwort == "B"
+
+
+def test_mc_buchstabe_mit_klammer():
+    assert _mc_paket("B)").fragen[0].antwort == "B"
+
+
+def test_mc_antwort_unabhaengig_von_leerraum_und_gross_klein():
+    assert _mc_paket("  richtig   ZWEI ").fragen[0].antwort == "B"
+
+
+def test_unzuordenbare_mc_antwort_wird_verworfen():
+    """Lieber keine Frage als eine, die im Player immer als falsch gilt."""
+    ergebnis = _mc_paket("Etwas ganz anderes")
+    assert [f.format for f in ergebnis.fragen] == ["freitext"]
+    assert any("verworfen" in m.beschreibung for m in ergebnis.materialluecken)
