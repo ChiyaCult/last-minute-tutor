@@ -2,13 +2,16 @@
 Boilerplate-Themenfilter und LLM-Anbieter-Auswahl."""
 import unicodedata
 
+import json
+import urllib.error
+
 import pytest
 
 from datetime import datetime, timezone
 
 from lernpaket_pipeline.llm import (AnthropicLLM, GeminiLLM,
                                     OllamaLLM, OpenAiKompatibelLLM,
-                                    extrahiere_json, hole_llm)
+                                    _wartezeit, extrahiere_json, hole_llm)
 from lernpaket_pipeline.pipeline import (erzeuge_lernpaket, extrahiere_material,
                                          finde_quellen, generiere_lernpaket,
                                          lade_extraktion, schreibe_extraktion)
@@ -452,3 +455,71 @@ def test_gemischt_escapt_und_nackt():
 
 def test_unicode_escape_ueberlebt_die_reparatur():
     assert extrahiere_json(r'{"t": "ä \alpha"}')["t"] == r"ä \alpha"
+
+
+# --- Drosselung gegen anzahlbasierte Limits ------------------------------
+
+def _http_fehler(code, koerper=b"", headers=None):
+    import io
+    # `headers or {}` wäre falsch: ein leerer Header-Container ist falsy, soll
+    # aber durchgereicht werden — genau der Fehler, den der Test prüft.
+    return urllib.error.HTTPError(
+        "u", code, "abgelehnt", {} if headers is None else headers,
+        io.BytesIO(koerper))
+
+
+def test_wartezeit_kommt_aus_googles_fehlertext():
+    """Google nennt die Wartezeit im Fehlertext, nicht im Retry-After-Header."""
+    koerper = json.dumps({"error": {"message":
+        "You exceeded your current quota. Please retry in 40.874128026s."}}).encode()
+    # Etwas Luft drauf, damit man nicht auf die Sekunde ins geschlossene Fenster läuft.
+    assert 41.0 <= _wartezeit(_http_fehler(429, koerper), 0) <= 42.5
+
+
+def test_retry_after_header_schlaegt_den_fehlertext():
+    class Headers(dict):
+        def get(self, k, d=""):
+            return "7" if k == "Retry-After" else d
+    assert _wartezeit(_http_fehler(429, b"retry in 99s", Headers()), 0) == 7.0
+
+
+def test_ohne_angabe_exponentielles_backoff():
+    assert _wartezeit(_http_fehler(503, b"kaputt"), 0) == 4.0
+    assert _wartezeit(_http_fehler(503, b"kaputt"), 2) == 16.0
+
+
+def test_gemini_wird_gedrosselt(monkeypatch):
+    """Bei einem Limit von 20 Anfragen/Minute muss die Pipeline von sich aus
+    Abstand halten — Wiederholen zählt gegen dasselbe Kontingent und macht es
+    schlimmer."""
+    import lernpaket_pipeline.llm as llm_modul
+    geschlafen = []
+    monkeypatch.setattr(llm_modul.time, "sleep", geschlafen.append)
+    monkeypatch.setattr(llm_modul, "_letzte_anfrage", {})
+    uhr = iter([100.0, 100.0, 100.5, 100.5])
+    monkeypatch.setattr(llm_modul.time, "monotonic", lambda: next(uhr))
+    llm_modul._drossele("gemini")          # erster Aufruf: kein Warten
+    llm_modul._drossele("gemini")          # 0,5 s später: auf 3,2 s auffüllen
+    assert geschlafen and abs(geschlafen[-1] - 2.7) < 0.01
+
+
+def test_ollama_wird_nicht_gedrosselt(monkeypatch):
+    """Lokal gibt es kein Anfragelimit; Drosseln wäre nur verschenkte Zeit."""
+    import lernpaket_pipeline.llm as llm_modul
+    geschlafen = []
+    monkeypatch.setattr(llm_modul.time, "sleep", geschlafen.append)
+    monkeypatch.setattr(llm_modul, "_letzte_anfrage", {})
+    llm_modul._drossele("ollama")
+    llm_modul._drossele("ollama")
+    assert geschlafen == []
+
+
+def test_abstand_ueber_umgebung(monkeypatch, saubere_umgebung):
+    import lernpaket_pipeline.llm as llm_modul
+    saubere_umgebung.setenv("LERNPAKET_GEMINI_ABSTAND", "10")
+    geschlafen = []
+    monkeypatch.setattr(llm_modul.time, "sleep", geschlafen.append)
+    monkeypatch.setattr(llm_modul, "_letzte_anfrage", {"gemini": 100.0})
+    monkeypatch.setattr(llm_modul.time, "monotonic", lambda: 101.0)
+    llm_modul._drossele("gemini")
+    assert abs(geschlafen[-1] - 9.0) < 0.01

@@ -161,22 +161,74 @@ def _zeitlimit(name: str, standard: int) -> int:
     return int(roh) if roh.isdigit() and int(roh) > 0 else standard
 
 
+# Mindestabstand zwischen zwei Anfragen an denselben Anbieter.
+#
+# Googles Free Tier begrenzt nicht Token, sondern ANFRAGEN: gemessen
+# "limit: 20, model: gemini-3.7-flash" bei einem Fenster von rund einer Minute.
+# Ein Modul kostet einen Aufruf je Thema plus Benennung und Aufgabenzuordnung —
+# 40 Themen überschreiten das also garantiert, egal wie klein die Prompts sind.
+#
+# Und Wiederholen macht es schlimmer: bei einem anzahlbasierten Limit zählt
+# jeder Versuch erneut. Genau daran ist ein Lauf bei Thema 1 gestorben, obwohl
+# das Fenster nach 41 Sekunden wieder offen war. Vorher zu warten ist billiger
+# als hinterher zu pokern.
+MINDESTABSTAND = {"gemini": 3.2}  # 20/min -> 3,0 s, mit etwas Luft
+_letzte_anfrage: dict = {}
+
+# Google nennt die Wartezeit nur im Fehlertext, nicht im Retry-After-Header.
+_RETRY_RE = re.compile(r"retry in ([0-9]+(?:\.[0-9]+)?)s", re.IGNORECASE)
+
+
+def _drossele(anbieter: str) -> None:
+    """Wartet, bis der Mindestabstand zum letzten Aufruf erreicht ist."""
+    abstand = float(os.environ.get(f"LERNPAKET_{anbieter.upper()}_ABSTAND", 0)
+                    or MINDESTABSTAND.get(anbieter, 0))
+    if abstand <= 0:
+        return
+    vergangen = time.monotonic() - _letzte_anfrage.get(anbieter, 0.0)
+    if 0 <= vergangen < abstand:
+        time.sleep(abstand - vergangen)
+    _letzte_anfrage[anbieter] = time.monotonic()
+
+
+def _wartezeit(fehler: urllib.error.HTTPError, versuch: int) -> float:
+    """Wartezeit nach einem abgelehnten Aufruf — Angabe des Anbieters schlägt Raten."""
+    # Auf None prüfen, nicht auf Wahrheitswert: ein Header-Container ohne
+    # weitere Einträge ist falsy, der Retry-After-Header darin aber gültig.
+    headers = getattr(fehler, "headers", None)
+    retry_after = headers.get("Retry-After", "") if headers is not None else ""
+    if retry_after.isdigit():
+        return float(retry_after)
+    try:
+        text = fehler.read().decode("utf-8", "replace")
+    except Exception:  # pragma: no cover - Körper schon gelesen o. Ä.
+        text = ""
+    treffer = _RETRY_RE.search(text)
+    if treffer:
+        # Etwas Luft, damit man nicht auf die Sekunde ins geschlossene Fenster läuft.
+        return float(treffer.group(1)) + 1.0
+    return 2.0 ** (versuch + 2)
+
+
 def _post_json(url: str, daten: dict, headers: dict, versuche: int = VERSUCHE,
-               zeitlimit: int = ZEITLIMIT) -> dict:
-    """POST mit Backoff bei Rate-Limit/Serverfehlern (Free-Tier-Kontingente)."""
+               zeitlimit: int = ZEITLIMIT, anbieter: str = "") -> dict:
+    """POST mit Drosselung und Backoff bei Rate-Limit/Serverfehlern."""
     anfrage = urllib.request.Request(
         url, data=json.dumps(daten).encode("utf-8"),
         headers={"content-type": "application/json", **headers})
     for i in range(versuche):
+        if anbieter:
+            _drossele(anbieter)
         try:
             with urllib.request.urlopen(anfrage, timeout=zeitlimit) as antwort:
                 return json.loads(antwort.read().decode("utf-8"))
         except urllib.error.HTTPError as fehler:
             if fehler.code not in VORUEBERGEHENDE_CODES or i == versuche - 1:
                 raise
-            retry_after = fehler.headers.get("Retry-After", "")
-            pause = float(retry_after) if retry_after.isdigit() else 2.0 ** (i + 2)
-            time.sleep(min(90.0, pause))
+            pause = min(90.0, _wartezeit(fehler, i))
+            log.info("Anbieter lehnte ab (HTTP %d) — %.0f s Pause, Versuch %d von %d.",
+                     fehler.code, pause, i + 2, versuche)
+            time.sleep(pause)
     raise RuntimeError("unerreichbar")  # pragma: no cover - Schleife endet per return/raise
 
 
@@ -210,7 +262,7 @@ class GeminiLLM:
             "system_instruction": {"parts": [{"text": system}]},
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {"maxOutputTokens": max_tokens},
-        }, {"x-goog-api-key": self.api_key})
+        }, {"x-goog-api-key": self.api_key}, anbieter="gemini")
         kandidaten = koerper.get("candidates") or [{}]
         teile = kandidaten[0].get("content", {}).get("parts", [])
         return "".join(t.get("text", "") for t in teile)
