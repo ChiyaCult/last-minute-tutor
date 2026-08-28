@@ -434,3 +434,21 @@ def test_gueltige_escapes_bleiben_erhalten():
 def test_gemischtes_latex_und_echte_escapes():
     d = extrahiere_json(r'{"t": "Formel $\alpha$\nund \"Zitat\""}')
     assert "alpha" in d["t"] and "\n" in d["t"] and '"Zitat"' in d["t"]
+
+
+def test_bereits_escapter_backslash_bleibt_heil():
+    """"\\\\alpha" ist gültiges JSON (ein Backslash + "alpha"). Wer jeden
+    Backslash einzeln prüft, verdoppelt den zweiten fälschlich und zerstört
+    wohlgeformtes JSON — so geschehen in der ersten Fassung der Reparatur."""
+    d = extrahiere_json(r'{"t": "$\\alpha + \\beta$"}')
+    assert d["t"] == r"$\alpha + \beta$"
+
+
+def test_gemischt_escapt_und_nackt():
+    """Modelle mischen beides in derselben Antwort."""
+    d = extrahiere_json(r'{"t": "\\frac{a}{b} und \sum_{i}"}')
+    assert d["t"] == r"\frac{a}{b} und \sum_{i}"
+
+
+def test_unicode_escape_ueberlebt_die_reparatur():
+    assert extrahiere_json(r'{"t": "ä \alpha"}')["t"] == r"ä \alpha"

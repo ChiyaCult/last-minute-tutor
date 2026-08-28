@@ -308,16 +308,20 @@ def hole_llm(anbieter: Optional[str] = None,
 
 # LaTeX und JSON vertragen sich schlecht: "\\overline{Q}" ist gültiges LaTeX,
 # aber "\\o" ist keine gültige JSON-Escape-Sequenz. Da der System-Prompt Formeln
-# als LaTeX verlangt, produzieren Modelle das systematisch — gemessen an einem
-# Thema über Schaltfunktionen. Der Fehler ist ein JSONDecodeError (erbt von
-# ValueError) und würde als stille Materiallücke enden.
-# Repariert wird nur, was JSON nicht als Escape kennt; gültige Sequenzen
-# (\n, \", \uXXXX) bleiben unangetastet.
-_KAPUTTES_ESCAPE_RE = re.compile(r'\\(?!["\\/bfnrtu])')
+# als LaTeX verlangt, produzieren Modelle das systematisch. Der Fehler ist ein
+# JSONDecodeError (erbt von ValueError) und würde als stille Materiallücke enden.
+#
+# Entscheidend ist, gültige Escape-PAARE als Paar zu konsumieren: in "\\\\alpha"
+# ist der zweite Backslash Teil des Paares "\\\\" und leitet keine neue Sequenz
+# ein. Wer jeden Backslash einzeln prüft, verdoppelt ihn fälschlich zu
+# "\\\\\\alpha" und macht damit wohlgeformtes JSON kaputt — genau das ist einer
+# ersten Fassung dieser Reparatur passiert.
+_ESCAPE_RE = re.compile(r'\\(["\\/bfnrtu])|\\')
 
 
 def _repariere_escapes(text: str) -> str:
-    return _KAPUTTES_ESCAPE_RE.sub(r"\\\\", text)
+    """Verdoppelt nur Backslashes, die keine gültige Escape-Sequenz einleiten."""
+    return _ESCAPE_RE.sub(lambda m: m.group(0) if m.group(1) else "\\\\", text)
 
 
 # Reasoning-Modelle stellen ihrer Antwort einen Gedankengang voran. Der enthält
