@@ -6,4 +6,6 @@ pipeline/.venv/
 player/node_modules/
 player/daten/
 lernpakete/
+# Ausgabeverzeichnisse von Vergleichsläufen (lernpakete-neu, -gemini, ...)
+lernpakete-*/
 input/
