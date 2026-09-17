@@ -271,6 +271,15 @@ Quizfragen). Nur hier läuft das LLM — verschiedene Anbieter/Modelle lassen si
 ausprobieren, ohne neu zu extrahieren. `lernpaket pfad/zum/modul` (ohne
 Unterkommando) führt weiterhin beides in einem Durchlauf aus.
 
+**Diagnose** rechnet über ein bereits generiertes Lernpaket die Kennzahlen nach,
+die den Umbau der Themenbildung steuern (`docs/BEFUND-AUFBEREITUNG.md`):
+Chunks je Thema, Anteil im Generierungs-Prompt, Dublettenrate, Anteil
+nicht-substanzieller Chunks, Themenzahl gegen das Zielband. Läuft ohne LLM:
+
+```bash
+uv run lernpaket diagnose ../lernpakete/mein-modul --ausgabe kennzahlen.json
+```
+
 ### Modulverzeichnis: Struktur & Benennung
 
 Die Quellen werden **per Konvention** erkannt (`finde_quellen`). Empfohlen ist

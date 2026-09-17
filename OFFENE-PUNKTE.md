@@ -20,3 +20,16 @@ Womit wird der Retrieval-Index für den **Tutormodus** gebaut? Offen: welches Em
 ## 3. Datei-Vertrags-Struktur zwischen Pipeline und Player
 
 Das konkrete Schema der Datei-Grenze aus ADR 0005: Wie liegen Themenkatalog, Lehrblöcke, Quizfragen, Belege und der Retrieval-Index als Dateien vor, und was gehört in die SQLite-DB (Fortschritt/Wiederholungsstand) vs. in statische Dateien (generierter Inhalt)? Bezug: ADR 0005, Glossar **Lernpaket**, **Player**, **Beleg**.
+
+## 4. Aufbereitung: Strukturheuristik durch inhaltsgetriebene Themenbildung ersetzen
+
+Nach mehreren vollständigen Läufen (September 2026) steht fest, dass die Themenbildung
+über die Gliederung des Studienbriefs nicht über Module hinweg trägt — Befunde in
+`docs/BEFUND-AUFBEREITUNG.md`. Die vorgeschlagene Antwort steht in **ADR 0009**
+(Verdichtungsschicht, Redundanz als Relevanzsignal, Themen per Clustering), **ADR 0010**
+(Grenze extraktiv-lokal vs. formulierend-remote) und **ADR 0011** (Embeddings als
+Rechenmittel, vorberechnete Kanten im Paket). Alle drei stehen auf *Vorschlag*.
+
+**Zu entscheiden:** ob die drei ADRs angenommen werden, und ob Stufe 3 (Aussagen-Schicht,
+Issue 17) nötig ist oder Dedup allein reicht. Beides hängt an den Messwerten aus
+Issue 14 — vorher ist die Frage nicht beantwortbar.
