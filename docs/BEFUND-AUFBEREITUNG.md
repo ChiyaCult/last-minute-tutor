@@ -108,7 +108,7 @@ Unabhängig vom Redesign zu bereinigen, weil sie beim Lesen in die Irre führen:
 ## Was zuerst gemessen gehört
 
 Alle Zahlen oben außer den Konstanten sind Beobachtung oder Schätzung. Vor dem Umbau
-sollte ein Diagnoseschritt über ein bereits gelaufenes Modul (Issue 14) belegen:
+sollte ein Diagnoseschritt über ein bereits gelaufenes Modul (Issue #45) belegen:
 
 - Chunks je Thema: Median, 90. Perzentil, Maximum
 - Anteil der Chunks, die je einen Generierungs-Prompt erreichen
@@ -117,8 +117,36 @@ sollte ein Diagnoseschritt über ein bereits gelaufenes Modul (Issue 14) belegen
   Übungslösungsköpfe, Begrüßung im Transkript)
 - Verteilung der Themenzahl je Modul gegen das Zielband 15–40
 
-Ohne diese Zahlen ist nicht entscheidbar, ob Dedup allein reicht (Issue 16) oder die
-Aussagen-Schicht (Issue 17) nötig ist.
+Ohne diese Zahlen ist nicht entscheidbar, ob Dedup allein reicht (Issue #47) oder die
+Aussagen-Schicht (Issue #48) nötig ist.
+
+**Werkzeug (Issue #45, erledigt):** `lernpaket diagnose <lernpaket-verzeichnis>` rechnet
+alle fünf Kennzahlen oben aus einem bereits generierten Lernpaket nach — deterministisch,
+ohne LLM (`pipeline/lernpaket_pipeline/diagnose.py`). Ausgabe ist JSON (`--ausgabe
+datei.json`, sonst stdout) plus eine Textzusammenfassung auf stderr. Getestet an einem
+synthetischen Mini-Modul mit von Hand nachgerechneten Sollwerten
+(`pipeline/tests/test_diagnose.py`).
+
+**Reale Zahlen stehen noch aus.** Dieser Agent-Lauf hatte keinen Zugriff auf ein bereits
+gelaufenes Modul (`input/`-Verzeichnis mit Extraktion + Lernpaket) — weder im Repo (dort
+bewusst nicht versioniert, siehe `.gitignore`) noch in der Remote-Ausführungsumgebung
+dieser Session. Um die Tabelle unten zu füllen und damit das Abbruchkriterium aus Issue
+#44 zu prüfen, einmal lokal ausführen und die Ausgabe hier eintragen (oder an diese
+Konversation zurückgeben):
+
+```
+uv run lernpaket diagnose pfad/zum/lernpaket --ausgabe kennzahlen.json
+```
+
+| Kennzahl | Wert |
+| --- | --- |
+| Modul | *(noch nicht gemessen)* |
+| Themen (Zielband 15–40) | — |
+| Chunks je Thema: Median / P90 / Max | — |
+| Mehrfachzuordnungsfaktor | — |
+| Anteil im Generierungs-Prompt | — |
+| Dublettenrate (gesamt / quellübergreifend) | — |
+| Anteil nicht-substanzieller Chunks | — |
 
 ## Was **nicht** in Frage steht
 

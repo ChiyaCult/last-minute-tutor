@@ -7,6 +7,8 @@
         # Schritt 2: Extraktionsergebnis → Lernpaket; LLM-Wahl per --llm/--llm-modell
     lernpaket pfad/zum/modul --ziel ../lernpakete
         # beides nacheinander (Kompatibilitätsform; --mit-* Flags wie bisher)
+    lernpaket diagnose pfad/zum/lernpaket
+        # Kennzahlen über ein bereits generiertes Lernpaket (Issue #45), ohne LLM
 
 Fortschritts-Logs laufen nach stderr; `--quiet`/`-q` schaltet sie ab.
 """
@@ -18,15 +20,17 @@ import json
 import logging
 import shutil
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
+from .diagnose import diagnostiziere, formatiere_zusammenfassung
 from .llm import ANBIETER
 from .llm import LLMDienstNichtVerfuegbar
 from .pipeline import (EXTRAKTIONS_ORDNER, GENERIERUNGS_CACHE, ModulBelegt,
                        erzeuge_und_schreibe, extrahiere_material,
                        generiere_lernpaket, lade_extraktion,
                        schreibe_extraktion)
-from .vertrag import schreibe_lernpaket
+from .vertrag import lade_lernpaket, schreibe_lernpaket
 
 
 def _vorhanden(*module: str) -> bool:
@@ -152,6 +156,32 @@ def _cmd_generieren(argv) -> int:
     return 0
 
 
+def _cmd_diagnose(argv) -> int:
+    parser = argparse.ArgumentParser(
+        prog="lernpaket diagnose",
+        description="Kennzahlen über ein bereits generiertes Lernpaket (Issue #45): "
+                    "Chunks je Thema, Prompt-Abdeckung, Dublettenrate, Anteil "
+                    "nicht-substanzieller Chunks, Themenzahl gegen das Zielband. "
+                    "Läuft ohne LLM, rein auf dem geschriebenen Ergebnis.")
+    parser.add_argument("lernpaket_dir", type=Path,
+                        help="Verzeichnis eines mit `lernpaket generieren` erzeugten "
+                             "Lernpakets (enthält themen.json, chunks.jsonl, …)")
+    parser.add_argument("--ausgabe", type=Path, default=None,
+                        help="JSON-Datei für die Kennzahlen (sonst auf stdout)")
+    args = parser.parse_args(argv)
+
+    paket = lade_lernpaket(args.lernpaket_dir)
+    ergebnis = diagnostiziere(paket.themen, paket.chunks)
+    daten = json.dumps(asdict(ergebnis), ensure_ascii=False, indent=2, sort_keys=True)
+    if args.ausgabe:
+        args.ausgabe.write_text(daten + "\n", encoding="utf-8")
+        print(f"Kennzahlen geschrieben: {args.ausgabe}")
+    else:
+        print(daten)
+    print(formatiere_zusammenfassung(ergebnis), file=sys.stderr)
+    return 0
+
+
 def _cmd_komplett(argv) -> int:
     """Kompatibilitätsform: beide Schritte in einem Lauf (Werkzeuge per --mit-*)."""
     parser = argparse.ArgumentParser(
@@ -204,6 +234,8 @@ def main(argv=None) -> int:
             return _cmd_extrahieren(argv[1:])
         if argv and argv[0] == "generieren":
             return _cmd_generieren(argv[1:])
+        if argv and argv[0] == "diagnose":
+            return _cmd_diagnose(argv[1:])
         return _cmd_komplett(argv)
     except LLMDienstNichtVerfuegbar as ausfall:
         # Abbruch statt stiller Degradation (ADR 0002/0003): Der Nutzer hat ein
