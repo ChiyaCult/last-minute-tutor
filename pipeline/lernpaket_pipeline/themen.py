@@ -548,12 +548,35 @@ def ergaenze_aus_transkript(themen: List[Thema], transkript_chunks: List[Chunk],
     return themen
 
 
+# Mindestanteil der (stoppwortbereinigten) Themen-Titelwörter, der im Chunk
+# vorkommen muss, damit der Chunk überhaupt als Kandidat für dieses Thema
+# gilt. Vorher genügte ein einziges gemeinsames Wort ohne Stoppwortfilter
+# (Befund 3) — "eines", "diese", "unter", "werden" fingen damit praktisch
+# jeden Chunk. Ein Titel hat meist nur 1-3 inhaltstragende Wörter, darum
+# reicht die Hälfte davon als belastbares Signal.
+MIN_TITEL_UEBERLAPP_ANTEIL = 0.5
+# Mehrfachzuordnung (ein Chunk zu mehreren Themen) nur oberhalb dieser
+# höheren Schwelle: sonst nimmt der Chunk automatisch jedes Thema mit, dessen
+# Titel zufällig ebenfalls (teilweise) passt, selbst wenn ein anderes Thema
+# deutlich besser trifft.
+MIN_TITEL_UEBERLAPP_ANTEIL_MEHRFACH = 0.75
+
+
+def _titel_ueberlappung(titel_woerter: "set[str]", chunk_woerter: "set[str]") -> float:
+    """Anteil der Titelwörter, die im Chunk vorkommen (0 bei leerem Titel)."""
+    if not titel_woerter:
+        return 0.0
+    return len(titel_woerter & chunk_woerter) / len(titel_woerter)
+
+
 def ordne_chunks_zu(themen: List[Thema], chunks: List[Chunk]) -> Dict[str, List[Chunk]]:
     """Ordnet jedem Thema die inhaltlich zugehörigen Chunks zu (für die Generierung).
 
     Studienbrief-Chunks werden sequenziell zugeordnet: Ein Thema `besitzt`
     alles ab seinem Beleg-Chunk bis zum Beleg-Chunk des nächsten Themas.
-    Vorlesungs-/Folien-Chunks per Wortüberlappung mit dem Titel.
+    Vorlesungs-/Folien-Chunks per Wortüberlappung mit dem Titel — stoppwort-
+    bereinigt, mit Mindestquote, an das beste Thema (argmax); nur oberhalb
+    einer zweiten, höheren Schwelle geht ein Chunk an mehr als eines.
     """
     reihenfolge = {c.id: i for i, c in enumerate(chunks)}
     sb_chunks = [c for c in chunks if c.quelle == "studienbrief"]
@@ -573,13 +596,26 @@ def ordne_chunks_zu(themen: List[Thema], chunks: List[Chunk]) -> Dict[str, List[
         ende = mit_start[idx + 1][1] if idx + 1 < len(mit_start) else len(chunks)
         zuordnung[tid] = [c for c in sb_chunks if start <= reihenfolge[c.id] < ende]
 
+    titel_woerter_je_thema = {
+        thema.id: {w.lower() for w in _WORT_RE.findall(thema.titel)} - STOPPWOERTER
+        for thema in themen
+    }
     andere = [c for c in chunks if c.quelle != "studienbrief"]
     for chunk in andere:
-        chunk_woerter = {w.lower() for w in _WORT_RE.findall(chunk.text)}
-        for thema in themen:
-            titel_woerter = {w.lower() for w in _WORT_RE.findall(thema.titel)}
-            if titel_woerter and titel_woerter & chunk_woerter:
-                zuordnung[thema.id].append(chunk)
+        chunk_woerter = {w.lower() for w in _WORT_RE.findall(chunk.text)} - STOPPWOERTER
+        bewertungen = [
+            (_titel_ueberlappung(titel_woerter_je_thema[thema.id], chunk_woerter), thema.id)
+            for thema in themen
+        ]
+        bester_score = max((s for s, _ in bewertungen), default=0.0)
+        if bester_score < MIN_TITEL_UEBERLAPP_ANTEIL:
+            continue
+        # Das beste Thema bekommt den Chunk immer; weitere Themen nur, wenn
+        # ihre eigene Überlappung ebenfalls die (höhere) Mehrfachschwelle reißt.
+        ziel_themen = {tid for score, tid in bewertungen
+                       if score == bester_score or score >= MIN_TITEL_UEBERLAPP_ANTEIL_MEHRFACH}
+        for tid in ziel_themen:
+            zuordnung[tid].append(chunk)
     return zuordnung
 
 

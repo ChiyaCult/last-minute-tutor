@@ -44,6 +44,15 @@ Bei 20+ kommenden Modulen ist das die eigentliche Wartungslast.
 
 ## Befund 3: Ein Zuordnungs-Bug erzeugt einen Großteil der 200 Chunks
 
+> **Status: behoben in Issue #46.** Der Codeblock unten zeigt den Stand vor der
+> Behebung; `ordne_chunks_zu()` filtert jetzt Stoppwörter, verlangt einen
+> Mindest-Überlappungsanteil und ordnet primär dem besten Thema zu (Details:
+> `themen.py`, `MIN_TITEL_UEBERLAPP_ANTEIL`/`_MEHRFACH`). Auf einem
+> synthetischen Stress-Modul (5 Themen mit stoppwortreichen Titeln, 150
+> Vorlesungs-/Folien-Chunks) sank die Gesamtzahl der Zuordnungen von 55 auf 19
+> und die größte Einzelzuordnung von 37 auf 9 Chunks — reale Zahlen aus einem
+> gelaufenen Modul stehen weiterhin aus (s. „Was zuerst gemessen gehört").
+
 `ordne_chunks_zu()` (`themen.py:551`), letzte Schleife:
 
 ```python
